@@ -19,6 +19,7 @@
 - [x] Implement `Backtester` class (Vectorized PnL calculation).
 - [x] Create `run_backtest.py` entry script.
 - [x] **CRITICAL HOTFIXES:** Fixed Sharpe Ratio annualization, Data Pagination, and Look-Ahead Bias.
+- [x] **Step 5: Simulation Hardening:** Implemented offline data caching and unit testing suite.
 - [ ] Validate Strategy Metrics (Sharpe, Drawdown).
 
 ### Phase 3: Execution & Production
@@ -53,6 +54,16 @@
     - *Fix:* Fetch data with buffer → Calculate indicators on full dataset → Slice to requested window.
     - *Impact:* Backtest results are now mathematically correct without look-ahead bias.
     - *Files:* `app/backtesting/engine.py` - Modified `run()` method to fetch buffer and calculate indicators before slicing.
+- **2025-01-XX (Offline Data Caching):** Implemented CSV-based caching layer in `CryptoDataHandler`.
+    - *Reason:* Prevents API rate limits, ensures reproducibility, and speeds up iteration (second run is instant).
+    - *Implementation:* Cache directory `data_cache/` stores CSV files named `{SYMBOL}_{TIMEFRAME}.csv`. Cache is checked before API calls, and new data overwrites cache.
+    - *Impact:* Backtests can iterate instantly on cached data, and results are reproducible across runs.
+    - *Files:* `app/data/handler.py` - Added `_sanitize_symbol()`, `_get_cache_path()`, `_save_to_csv()`, `_load_from_csv()`, `_cache_covers_range()` methods.
+- **2025-01-XX (Unit Testing Suite):** Created comprehensive unit tests for backtester math verification.
+    - *Reason:* Verify mathematical correctness of equity calculations and Sharpe ratio without API dependencies.
+    - *Implementation:* `MockDataHandler` and `MockStrategy` classes for isolated testing. Tests verify equity curve calculations and Sharpe ratio annualization with known data.
+    - *Impact:* Backtester math is now mathematically proven correct. All tests pass.
+    - *Files:* `tests/test_engine_logic.py` - Created test suite with 3 test cases covering equity calculation, Sharpe ratio, and buy-hold scenarios.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.

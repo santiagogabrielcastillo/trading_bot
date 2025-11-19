@@ -1,25 +1,91 @@
 import pandas as pd
 import ccxt
 from typing import Optional
+from pathlib import Path
+import logging
 
 # Importamos la interfaz que definimos previamente
 from app.core.interfaces import IDataHandler
 
+logger = logging.getLogger(__name__)
+
 class CryptoDataHandler(IDataHandler):
     """
     Implementación concreta usando CCXT para obtener datos de mercado.
+    Supports offline caching to CSV files for faster iteration and reproducibility.
     """
     
-    def __init__(self, exchange: ccxt.Exchange):
+    def __init__(self, exchange: ccxt.Exchange, cache_dir: Optional[Path] = None):
         """
         Recibe una instancia ya configurada de ccxt.Exchange.
         Esto permite inyección de dependencias (facilita tests y cambios de exchange).
+        
+        Args:
+            exchange: Configured ccxt.Exchange instance
+            cache_dir: Optional path to cache directory. Defaults to 'data_cache' in project root.
         """
         self.exchange = exchange
+        if cache_dir is None:
+            # Default to project root / data_cache
+            project_root = Path(__file__).parent.parent.parent
+            cache_dir = project_root / "data_cache"
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
 
+    def _sanitize_symbol(self, symbol: str) -> str:
+        """
+        Sanitize symbol name for use in filenames.
+        Example: 'BTC/USDT' -> 'BTC_USDT'
+        """
+        return symbol.replace('/', '_')
+    
+    def _get_cache_path(self, symbol: str, timeframe: str) -> Path:
+        """
+        Generate cache file path for a given symbol and timeframe.
+        """
+        sanitized_symbol = self._sanitize_symbol(symbol)
+        filename = f"{sanitized_symbol}_{timeframe}.csv"
+        return self.cache_dir / filename
+    
+    def _save_to_csv(self, df: pd.DataFrame, symbol: str, timeframe: str) -> None:
+        """
+        Save DataFrame to CSV cache file.
+        """
+        cache_path = self._get_cache_path(symbol, timeframe)
+        df.to_csv(cache_path)
+        logger.info(f"Saved {len(df)} candles to cache: {cache_path}")
+    
+    def _load_from_csv(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        """
+        Load DataFrame from CSV cache file if it exists.
+        Returns None if file doesn't exist or can't be read.
+        """
+        cache_path = self._get_cache_path(symbol, timeframe)
+        if not cache_path.exists():
+            return None
+        
+        try:
+            df = pd.read_csv(cache_path, index_col='timestamp', parse_dates=True)
+            logger.info(f"Loaded {len(df)} candles from cache: {cache_path}")
+            return df
+        except Exception as e:
+            logger.warning(f"Failed to load cache from {cache_path}: {e}")
+            return None
+    
+    def _cache_covers_range(self, df: pd.DataFrame, limit: int) -> bool:
+        """
+        Check if cached data covers the requested limit.
+        Since we fetch backwards from the most recent candle, we check if
+        the cache has at least 'limit' rows.
+        """
+        return len(df) >= limit
+    
     def get_historical_data(self, symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
         """
         Descarga velas históricas y devuelve un DataFrame formateado.
+        
+        Implements offline caching: checks for cached CSV first, only fetches from API
+        if cache is missing or insufficient. New data overwrites the cache.
         
         Implements pagination to fetch large datasets beyond the exchange's single-request limit.
         For long backtests, this ensures we can fetch thousands of candles by making multiple
@@ -27,6 +93,13 @@ class CryptoDataHandler(IDataHandler):
         
         Fetches data going backwards from the most recent candle.
         """
+        # Try to load from cache first
+        cached_df = self._load_from_csv(symbol, timeframe)
+        if cached_df is not None and self._cache_covers_range(cached_df, limit):
+            # Cache hit - return requested amount (most recent 'limit' rows)
+            return cached_df.tail(limit).copy()
+        
+        # Cache miss or insufficient - fetch from API
         import time
         
         if hasattr(self.exchange, 'options') and 'fetchOHLCVLimit' in self.exchange.options:
@@ -88,7 +161,11 @@ class CryptoDataHandler(IDataHandler):
         cols = ['open', 'high', 'low', 'close', 'volume']
         df[cols] = df[cols].astype(float)
 
-        return df
+        # Save to cache for future use
+        self._save_to_csv(df, symbol, timeframe)
+        
+        # Return requested amount (most recent 'limit' rows)
+        return df.tail(limit).copy()
     
     @staticmethod
     def _timeframe_to_minutes(timeframe: str) -> int:
