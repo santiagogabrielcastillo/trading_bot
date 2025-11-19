@@ -2,8 +2,8 @@
 
 ## Project Status
 - **Current Phase:** 2 - Simulation Engine (Backtesting).
-- **Last Update:** 2025-11-19.
-- **Health:** Green (Architecture corrected for vectorization).
+- **Last Update:** 2025-01-XX.
+- **Health:** Green (Critical hotfixes completed).
 
 ## Progress Log
 
@@ -18,6 +18,7 @@
 ### Phase 2: Simulation Engine (Current Focus)
 - [x] Implement `Backtester` class (Vectorized PnL calculation).
 - [x] Create `run_backtest.py` entry script.
+- [x] **CRITICAL HOTFIXES:** Fixed Sharpe Ratio annualization, Data Pagination, and Look-Ahead Bias.
 - [ ] Validate Strategy Metrics (Sharpe, Drawdown).
 
 ### Phase 3: Execution & Production
@@ -39,6 +40,19 @@
 - **2025-11-19 (Configuration File):** Added `settings/config.json` as the canonical source for bot settings consumed by `run_backtest.py`.
     - *Reason:* Enables scripted backtests without hardcoding credentials/params.
     - *Impact:* Future runners (live or batch) can reuse the same config contract.
+- **2025-01-XX (Sharpe Ratio Fix):** Replaced hardcoded 252 periods/year with dynamic calculation based on timeframe.
+    - *Reason:* Crypto markets operate 24/7, not traditional trading days. Annualization must match actual market hours.
+    - *Impact:* Sharpe ratios now correctly reflect crypto market structure (e.g., '1h' = 8760 periods/year, '1d' = 365 periods/year).
+    - *Files:* `app/backtesting/engine.py` - Added `_calculate_periods_per_year()` method.
+- **2025-01-XX (Data Pagination Fix):** Implemented pagination loop in `CryptoDataHandler.get_historical_data()`.
+    - *Reason:* Exchange APIs limit single requests (typically 1000 candles). Long backtests require fetching thousands of candles.
+    - *Impact:* Backtests can now span months/years of historical data without hitting API limits.
+    - *Files:* `app/data/handler.py` - Added pagination logic with rate limiting and duplicate handling.
+- **2025-01-XX (Look-Ahead Bias Fix):** Fixed indicator calculation order in `Backtester.run()`.
+    - *Reason:* Calculating indicators after slicing data causes warm-up period NaNs to appear in backtest window, distorting results.
+    - *Fix:* Fetch data with buffer → Calculate indicators on full dataset → Slice to requested window.
+    - *Impact:* Backtest results are now mathematically correct without look-ahead bias.
+    - *Files:* `app/backtesting/engine.py` - Modified `run()` method to fetch buffer and calculate indicators before slicing.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
