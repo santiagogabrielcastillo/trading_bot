@@ -1,0 +1,11 @@
+{
+    "strategy": {
+        "name": "sma_cross",
+        "symbol": "BTC/USDT",
+        "timeframe": "1h",
+        "params": {
+            "fast_window": 10,
+            "slow_window": 50
+        }
+    }
+}

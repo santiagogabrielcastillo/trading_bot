@@ -27,7 +27,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import itertools
 
 import pandas as pd
@@ -40,8 +40,52 @@ from app.data.handler import CryptoDataHandler
 from app.core.interfaces import IDataHandler, BaseStrategy
 from app.backtesting.engine import Backtester
 from app.strategies.sma_cross import SmaCrossStrategy
-from app.config.models import StrategyConfig
+from app.strategies.atr_strategy import VolatilityAdjustedStrategy
+from app.config.models import StrategyConfig, BotConfig
 from app.execution.mock_executor import MockExecutor
+
+
+def load_strategy_from_config(config_path: str = "settings/config.json") -> Tuple[BaseStrategy, StrategyConfig]:
+    """
+    Load strategy from config.json file.
+    
+    Args:
+        config_path: Path to config.json file
+        
+    Returns:
+        Tuple of (strategy_instance, strategy_config)
+    """
+    config_file = Path(config_path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    # Load config
+    with open(config_file, 'r') as f:
+        config_dict = json.load(f)
+    
+    bot_config = BotConfig(**config_dict)
+    strategy_config = bot_config.strategy
+    
+    # Strategy name mapping
+    strategy_map = {
+        "sma_cross": SmaCrossStrategy,
+        "SmaCrossStrategy": SmaCrossStrategy,
+        "VolatilityAdjustedStrategy": VolatilityAdjustedStrategy,
+    }
+    
+    strategy_name = strategy_config.name
+    strategy_class = strategy_map.get(strategy_name)
+    
+    if strategy_class is None:
+        raise ValueError(
+            f"Unknown strategy: {strategy_name}. "
+            f"Available strategies: {list(strategy_map.keys())}"
+        )
+    
+    # Instantiate strategy
+    strategy = strategy_class(config=strategy_config)
+    
+    return strategy, strategy_config
 
 
 class CachedDataHandler(IDataHandler):
@@ -122,6 +166,7 @@ class StrategyOptimizer:
         end_date: str = "2023-12-31",
         split_date: Optional[str] = None,
         initial_capital: float = 1.0,
+        base_strategy_config: Optional[StrategyConfig] = None,
     ):
         """
         Initialize the optimizer.
@@ -134,6 +179,7 @@ class StrategyOptimizer:
             split_date: Optional split date for walk-forward validation (YYYY-MM-DD)
                        If provided, enables In-Sample/Out-of-Sample validation
             initial_capital: Initial capital for backtests (normalized to 1.0)
+            base_strategy_config: Base strategy config from config.json
         """
         self.symbol = symbol
         self.timeframe = timeframe
@@ -141,6 +187,7 @@ class StrategyOptimizer:
         self.end_date = end_date
         self.split_date = split_date
         self.initial_capital = initial_capital
+        self.base_strategy_config = base_strategy_config
         
         # Validate split_date if provided
         if self.split_date:
@@ -501,18 +548,29 @@ class StrategyOptimizer:
         bt_end = end_date or self.end_date
         
         # Create strategy config with current parameters
+        # Merge base config params with optimization params
+        base_params = self.base_strategy_config.params.copy() if self.base_strategy_config else {}
         strategy_config = StrategyConfig(
-            name="sma_cross",
+            name=self.base_strategy_config.name if self.base_strategy_config else "sma_cross",
             symbol=self.symbol,
             timeframe=self.timeframe,
             params={
-                "fast_window": fast_window,
+                **base_params,  # Include all params from config.json
+                "fast_window": fast_window,  # Override with optimization params
                 "slow_window": slow_window,
             }
         )
         
-        # Instantiate strategy
-        strategy = SmaCrossStrategy(config=strategy_config)
+        # Instantiate strategy using factory function
+        strategy_map = {
+            "sma_cross": SmaCrossStrategy,
+            "SmaCrossStrategy": SmaCrossStrategy,
+            "VolatilityAdjustedStrategy": VolatilityAdjustedStrategy,
+        }
+        
+        strategy_name = strategy_config.name
+        strategy_class = strategy_map.get(strategy_name, SmaCrossStrategy)
+        strategy = strategy_class(config=strategy_config)
         
         # Create backtester with cached data handler
         backtester = Backtester(
@@ -715,17 +773,58 @@ Examples:
     args = parser.parse_args()
     
     try:
+        # ========== STEP 0: Load strategy from config.json ==========
+        print("=" * 70)
+        print("STRATEGY CONFIGURATION")
+        print("=" * 70)
+        
+        try:
+            strategy, strategy_config = load_strategy_from_config()
+            print(f"✓ Strategy loaded from config.json:")
+            print(f"  Strategy Name: {strategy_config.name}")
+            print(f"  Symbol:        {strategy_config.symbol}")
+            print(f"  Timeframe:     {strategy_config.timeframe}")
+            print(f"  Parameters from config.json:")
+            for key, value in strategy_config.params.items():
+                print(f"    - {key}: {value}")
+            print()
+        except Exception as e:
+            print(f"⚠ Warning: Could not load strategy from config.json: {e}")
+            print("  Falling back to default SmaCrossStrategy")
+            print()
+            strategy_config = StrategyConfig(
+                name="sma_cross",
+                symbol=args.symbol,
+                timeframe=args.timeframe,
+                params={}
+            )
+        
         # Parse parameter ranges
         fast_range = [int(x.strip()) for x in args.fast.split(',')]
         slow_range = [int(x.strip()) for x in args.slow.split(',')]
         
-        # Create optimizer
+        print("=" * 70)
+        print("OPTIMIZATION PARAMETERS")
+        print("=" * 70)
+        print(f"Command-line arguments:")
+        print(f"  Symbol:      {args.symbol}")
+        print(f"  Timeframe:   {args.timeframe}")
+        print(f"  Start Date:  {args.start_date}")
+        print(f"  End Date:    {args.end_date}")
+        if args.split_date:
+            print(f"  Split Date:  {args.split_date} (Walk-Forward Mode)")
+        print(f"  Fast Range:  {fast_range}")
+        print(f"  Slow Range:  {slow_range}")
+        print()
+        
+        # Create optimizer with strategy config
         optimizer = StrategyOptimizer(
             symbol=args.symbol,
             timeframe=args.timeframe,
             start_date=args.start_date,
             end_date=args.end_date,
             split_date=args.split_date,
+            base_strategy_config=strategy_config,
         )
         
         # STEP 1: Load data ONCE

@@ -11,15 +11,17 @@
     "take_profit_pct": 0.04
   },
   "strategy": {
-    "name": "sma_cross",
+    "name": "VolatilityAdjustedStrategy",
     "symbol": "BTC/USDT",
     "timeframe": "1h",
     "params": {
       "fast_window": 10,
-      "slow_window": 50
+      "slow_window": 100,
+      "atr_window": 14,
+      "atr_multiplier": 2.0,
+      "volatility_lookback": 5
     }
   },
-  "db_path": "trading_state.db",
-  "execution_mode": "paper"
+"db_path": "trading_state.db",
+"execution_mode": "paper"
 }
-
