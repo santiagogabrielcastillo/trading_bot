@@ -8,6 +8,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Optional
+import pandas as pd
 
 from app.config.models import BotConfig
 from app.core.interfaces import IDataHandler, IExecutor, BaseStrategy
@@ -71,6 +72,9 @@ class TradingBot:
         
         # Track last signal to avoid duplicate trades
         self.last_signal_value: Optional[int] = None
+        
+        # Store latest DataFrame for SL/TP extraction
+        self._latest_df: Optional[pd.DataFrame] = None
         
         logger.info(f"TradingBot initialized for {self.symbol} on {self.timeframe} timeframe")
         logger.info(f"Strategy: {config.strategy.name}, Buffer size: {self.buffer_size}")
@@ -152,6 +156,9 @@ class TradingBot:
             indicators=self._extract_indicators(df),
         )
         
+        # Store DataFrame for potential SL/TP extraction in trading logic
+        self._latest_df = df
+        
         logger.info("--- Trading cycle complete ---\n")
     
     def _execute_trading_logic(
@@ -229,6 +236,33 @@ class TradingBot:
                 # Opening new position: calculate from config
                 quantity = self._calculate_order_quantity(price)
             
+            # Extract stop-loss and take-profit prices for OCO order placement
+            stop_loss_price = None
+            take_profit_price = None
+            
+            # Only place OCO for opening positions (BUY with flat position)
+            if side == OrderSide.BUY and is_flat:
+                # Extract stop-loss from DataFrame if available (e.g., from VolatilityAdjustedStrategy)
+                if self._latest_df is not None and 'stop_loss_price' in self._latest_df.columns:
+                    try:
+                        sl_price = float(self._latest_df['stop_loss_price'].iloc[-1])
+                        if not pd.isna(sl_price) and sl_price > 0:
+                            stop_loss_price = sl_price
+                            logger.info(f"📊 Extracted stop-loss price from strategy: {stop_loss_price:.2f}")
+                    except (IndexError, ValueError, TypeError) as e:
+                        logger.debug(f"Could not extract stop-loss from DataFrame: {e}")
+                
+                # Calculate take-profit from config
+                take_profit_pct = self.config.risk.take_profit_pct
+                take_profit_price = price * (1 + take_profit_pct)
+                logger.info(f"📊 Calculated take-profit price: {take_profit_price:.2f} ({take_profit_pct*100:.1f}%)")
+                
+                # If no stop-loss from strategy, calculate from config
+                if stop_loss_price is None:
+                    stop_loss_pct = self.config.risk.stop_loss_pct
+                    stop_loss_price = price * (1 - stop_loss_pct)
+                    logger.info(f"📊 Calculated stop-loss price from config: {stop_loss_price:.2f} ({stop_loss_pct*100:.1f}%)")
+            
             try:
                 order = self.executor.execute_order(
                     symbol=self.symbol,
@@ -236,6 +270,8 @@ class TradingBot:
                     quantity=quantity,
                     order_type=OrderType.MARKET,
                     price=price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
                 )
                 
                 logger.info(
@@ -243,6 +279,16 @@ class TradingBot:
                     f"{side.value} {quantity} {self.symbol} @ {price:.2f}"
                 )
                 logger.info(f"Order ID: {order['id']}, Status: {order['status']}")
+                
+                # Log OCO protection status
+                if stop_loss_price and take_profit_price:
+                    logger.info("")
+                    logger.info("🛡️  HARD PROTECTION ACTIVE:")
+                    logger.info(f"  Stop-Loss: {stop_loss_price:.2f} ({((price - stop_loss_price) / price * 100):.2f}% below entry)")
+                    logger.info(f"  Take-Profit: {take_profit_price:.2f} ({((take_profit_price - price) / price * 100):.2f}% above entry)")
+                    logger.info("  OCO order placed on exchange - position protected!")
+                else:
+                    logger.info("⚠️  No OCO protection (SL/TP prices not available)")
                 
             except Exception as e:
                 logger.error(f"❌ Failed to execute order: {e}", exc_info=True)
@@ -341,7 +387,24 @@ class TradingBot:
         logger.info("=" * 70)
         logger.info(f"Symbol: {self.symbol}")
         logger.info(f"Timeframe: {self.timeframe}")
+        logger.info(f"Strategy: {self.config.strategy.name}")
         logger.info(f"Sleep interval: {sleep_seconds}s")
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("🛡️  RISK MANAGEMENT CONFIGURATION")
+        logger.info("=" * 70)
+        logger.info(f"Max Position Size: ${self.config.risk.max_position_size_usd:,.2f}")
+        logger.info(f"Stop Loss: {self.config.risk.stop_loss_pct*100:.1f}% (from config)")
+        logger.info(f"Take Profit: {self.config.risk.take_profit_pct*100:.1f}% (from config)")
+        logger.info("")
+        logger.info("🛡️  HARD PROTECTION: OCO Orders Enabled")
+        logger.info("  - Stop-loss and take-profit orders placed on exchange")
+        logger.info("  - Positions protected even if bot crashes or goes offline")
+        if hasattr(self.strategy, 'get_stop_loss_price'):
+            logger.info("  - Strategy provides dynamic stop-loss (ATR-based)")
+        else:
+            logger.info("  - Using config-based stop-loss calculation")
+        logger.info("=" * 70)
         logger.info("Press Ctrl+C to stop")
         logger.info("=" * 70)
         

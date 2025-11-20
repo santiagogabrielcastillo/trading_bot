@@ -461,3 +461,277 @@ def test_order_side_conversion_sell(binance_executor: BinanceExecutor):
     model_side = binance_executor._convert_order_side(OrderSide.SELL)
     assert model_side == ModelOrderSide.SELL
 
+
+# --- OCO Order Tests ---
+
+def test_execute_order_places_oco_on_successful_entry(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test that OCO order is placed after successful entry order when SL/TP prices provided."""
+    # Mock entry order response
+    entry_order = {
+        'id': 'entry_12345',
+        'symbol': 'BTC/USDT',
+        'type': 'market',
+        'side': 'buy',
+        'price': 50000.0,
+        'average': 50000.0,
+        'amount': 0.01,
+        'filled': 0.01,
+        'remaining': 0.0,
+        'status': 'closed',
+        'timestamp': 1609459200000,
+    }
+    
+    # Mock OCO order response
+    oco_response = {
+        'orderListId': 'oco_list_123',
+        'contingencyType': 'OCO',
+        'listStatusType': 'EXECUTING',
+        'listOrderStatus': 'EXECUTING',
+        'orders': [
+            {
+                'orderId': 'sl_order_456',
+                'symbol': 'BTC/USDT',
+                'clientOrderId': 'sl_client_456',
+                'price': '49000.00',
+                'stopPrice': '49000.00',
+            },
+            {
+                'orderId': 'tp_order_789',
+                'symbol': 'BTC/USDT',
+                'clientOrderId': 'tp_client_789',
+                'price': '52000.00',
+            },
+        ],
+    }
+    
+    # Setup mocks
+    mock_ccxt_client.create_market_order = MagicMock(return_value=entry_order)
+    mock_ccxt_client.create_oco_order = MagicMock(return_value=oco_response)
+    
+    # Execute order with SL/TP prices
+    stop_loss_price = 49000.0
+    take_profit_price = 52000.0
+    
+    result = binance_executor.execute_order(
+        symbol='BTC/USDT',
+        side=OrderSide.BUY,
+        quantity=0.01,
+        order_type=OrderType.MARKET,
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
+    )
+    
+    # Verify entry order was executed
+    assert result == entry_order
+    mock_ccxt_client.create_market_order.assert_called_once_with(
+        symbol='BTC/USDT',
+        side='buy',
+        amount=0.01,
+        params={},
+    )
+    
+    # Verify OCO order was placed
+    mock_ccxt_client.create_oco_order.assert_called_once()
+    oco_call_args = mock_ccxt_client.create_oco_order.call_args
+    
+    # Verify OCO call parameters
+    assert oco_call_args[1]['symbol'] == 'BTC/USDT'
+    assert oco_call_args[1]['side'] == 'sell'  # Opposite of entry (BUY → SELL)
+    assert oco_call_args[1]['amount'] == 0.01
+    assert oco_call_args[1]['price'] == str(take_profit_price)  # Limit price (TP)
+    assert oco_call_args[1]['stopPrice'] == str(stop_loss_price)  # Stop price (SL)
+    assert oco_call_args[1]['stopLimitPrice'] == str(stop_loss_price)  # Stop limit price
+    assert oco_call_args[1]['stopLimitTimeInForce'] == 'GTC'
+    
+    # Verify trade was persisted with OCO order IDs
+    trades = in_memory_db_session.query(Trade).all()
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.stop_loss_order_id == 'sl_order_456'
+    assert trade.take_profit_order_id == 'tp_order_789'
+    assert trade.exchange_order_id == 'entry_12345'
+
+
+def test_execute_order_skips_oco_when_no_sl_tp_prices(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test that OCO order is NOT placed when SL/TP prices are not provided."""
+    entry_order = {
+        'id': 'entry_12345',
+        'symbol': 'BTC/USDT',
+        'type': 'market',
+        'side': 'buy',
+        'average': 50000.0,
+        'filled': 0.01,
+        'status': 'closed',
+        'timestamp': 1609459200000,
+    }
+    
+    mock_ccxt_client.create_market_order = MagicMock(return_value=entry_order)
+    
+    # Execute order without SL/TP prices
+    result = binance_executor.execute_order(
+        symbol='BTC/USDT',
+        side=OrderSide.BUY,
+        quantity=0.01,
+        order_type=OrderType.MARKET,
+    )
+    
+    # Verify entry order executed
+    assert result == entry_order
+    
+    # Verify OCO order was NOT called
+    assert not hasattr(mock_ccxt_client, 'create_oco_order') or \
+           not mock_ccxt_client.create_oco_order.called
+    
+    # Verify trade persisted without OCO order IDs
+    trades = in_memory_db_session.query(Trade).all()
+    assert len(trades) == 1
+    assert trades[0].stop_loss_order_id is None
+    assert trades[0].take_profit_order_id is None
+
+
+def test_execute_order_skips_oco_when_zero_prices(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test that OCO order is NOT placed when SL/TP prices are zero."""
+    entry_order = {
+        'id': 'entry_12345',
+        'symbol': 'BTC/USDT',
+        'type': 'market',
+        'side': 'buy',
+        'average': 50000.0,
+        'filled': 0.01,
+        'status': 'closed',
+        'timestamp': 1609459200000,
+    }
+    
+    mock_ccxt_client.create_market_order = MagicMock(return_value=entry_order)
+    
+    # Execute order with zero SL/TP prices
+    result = binance_executor.execute_order(
+        symbol='BTC/USDT',
+        side=OrderSide.BUY,
+        quantity=0.01,
+        order_type=OrderType.MARKET,
+        stop_loss_price=0.0,
+        take_profit_price=0.0,
+    )
+    
+    # Verify entry order executed
+    assert result == entry_order
+    
+    # Verify OCO order was NOT called
+    assert not hasattr(mock_ccxt_client, 'create_oco_order') or \
+           not mock_ccxt_client.create_oco_order.called
+
+
+def test_oco_order_failure_does_not_fail_entry(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test that OCO order failure doesn't fail the entry order."""
+    entry_order = {
+        'id': 'entry_12345',
+        'symbol': 'BTC/USDT',
+        'type': 'market',
+        'side': 'buy',
+        'average': 50000.0,
+        'filled': 0.01,
+        'status': 'closed',
+        'timestamp': 1609459200000,
+    }
+    
+    mock_ccxt_client.create_market_order = MagicMock(return_value=entry_order)
+    mock_ccxt_client.create_oco_order = MagicMock(side_effect=ccxt.ExchangeError("OCO order failed"))
+    
+    # Execute order with SL/TP prices - OCO should fail but entry should succeed
+    result = binance_executor.execute_order(
+        symbol='BTC/USDT',
+        side=OrderSide.BUY,
+        quantity=0.01,
+        order_type=OrderType.MARKET,
+        stop_loss_price=49000.0,
+        take_profit_price=52000.0,
+    )
+    
+    # Verify entry order still executed successfully
+    assert result == entry_order
+    
+    # Verify trade was persisted (even though OCO failed)
+    trades = in_memory_db_session.query(Trade).all()
+    assert len(trades) == 1
+    assert trades[0].stop_loss_order_id is None  # OCO failed, so no IDs
+    assert trades[0].take_profit_order_id is None
+
+
+def test_cancel_oco_orders_success(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test successful cancellation of OCO orders."""
+    # Create a trade with OCO order IDs
+    trade = Trade(
+        id='test_trade_123',
+        symbol='BTC/USDT',
+        side=ModelOrderSide.BUY,
+        price=50000.0,
+        quantity=0.01,
+        exchange_order_id='entry_12345',
+        stop_loss_order_id='sl_order_456',
+        take_profit_order_id='tp_order_789',
+    )
+    in_memory_db_session.add(trade)
+    in_memory_db_session.commit()
+    
+    # Mock cancel order responses
+    mock_ccxt_client.cancel_order = MagicMock(return_value={'id': 'canceled'})
+    
+    # Cancel OCO orders
+    binance_executor.cancel_oco_orders(trade)
+    
+    # Verify cancel_order was called for both SL and TP
+    assert mock_ccxt_client.cancel_order.call_count == 2
+    
+    # Verify trade OCO order IDs were cleared
+    in_memory_db_session.refresh(trade)
+    assert trade.stop_loss_order_id is None
+    assert trade.take_profit_order_id is None
+
+
+def test_cancel_oco_orders_no_orders(
+    binance_executor: BinanceExecutor,
+    mock_ccxt_client,
+    in_memory_db_session
+):
+    """Test cancel_oco_orders handles trade without OCO orders gracefully."""
+    trade = Trade(
+        id='test_trade_123',
+        symbol='BTC/USDT',
+        side=ModelOrderSide.BUY,
+        price=50000.0,
+        quantity=0.01,
+        exchange_order_id='entry_12345',
+        stop_loss_order_id=None,
+        take_profit_order_id=None,
+    )
+    in_memory_db_session.add(trade)
+    in_memory_db_session.commit()
+    
+    # Should not raise and should not call cancel_order
+    binance_executor.cancel_oco_orders(trade)
+    
+    # Verify cancel_order was NOT called
+    assert not hasattr(mock_ccxt_client, 'cancel_order') or \
+           not mock_ccxt_client.cancel_order.called
+

@@ -55,11 +55,18 @@ class Trade(Base):
     # For MockExecutor: a generated fake ID (e.g., "mock_1234567890")
     exchange_order_id = Column(String(100), nullable=True, index=True)
     
+    # OCO order IDs for hard stop-loss and take-profit protection
+    # These are set when an OCO order is placed immediately after entry
+    stop_loss_order_id = Column(String(100), nullable=True)
+    take_profit_order_id = Column(String(100), nullable=True)
+    
     def __repr__(self) -> str:
         return (
             f"<Trade(id={self.id[:8]}..., symbol={self.symbol}, "
             f"side={self.side.value}, price={self.price}, qty={self.quantity}, "
-            f"exchange_id={self.exchange_order_id or 'N/A'})>"
+            f"exchange_id={self.exchange_order_id or 'N/A'}, "
+            f"sl_order={self.stop_loss_order_id or 'N/A'}, "
+            f"tp_order={self.take_profit_order_id or 'N/A'})>"
         )
 
 

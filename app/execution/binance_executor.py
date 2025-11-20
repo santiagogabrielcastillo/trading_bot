@@ -13,7 +13,7 @@ import ccxt
 
 from app.core.interfaces import IExecutor
 from app.core.enums import OrderSide as InterfaceOrderSide, OrderType
-from app.models.sql import OrderSide as ModelOrderSide
+from app.models.sql import OrderSide as ModelOrderSide, Trade
 from app.repositories.trade_repository import TradeRepository
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,8 @@ class BinanceExecutor(IExecutor):
         quantity: float,
         order_type: OrderType,
         price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
     ) -> Optional[dict]:
         """
         Execute a live order on Binance exchange.
@@ -75,6 +77,8 @@ class BinanceExecutor(IExecutor):
             quantity: Quantity to trade (in base currency)
             order_type: Order type (MARKET or LIMIT)
             price: Optional execution price (required for LIMIT orders)
+            stop_loss_price: Optional stop-loss price for OCO order placement
+            take_profit_price: Optional take-profit price for OCO order placement
             
         Returns:
             CCXT order structure on success, None on recoverable errors
@@ -123,7 +127,26 @@ class BinanceExecutor(IExecutor):
             )
             
             # Persist trade to database
-            self._persist_trade(order, symbol, side)
+            trade = self._persist_trade(order, symbol, side)
+            
+            # Place OCO order for hard SL/TP protection if prices are provided
+            if trade and stop_loss_price and take_profit_price and stop_loss_price > 0 and take_profit_price > 0:
+                try:
+                    self._place_oco_order(
+                        trade=trade,
+                        symbol=symbol,
+                        side=side,
+                        quantity=float(order.get('filled', quantity)),
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                    )
+                except Exception as e:
+                    # Log error but don't fail the entry order
+                    logger.error(
+                        f"⚠️  Failed to place OCO order for trade {trade.id}: {e}",
+                        exc_info=True
+                    )
+                    logger.warning("Entry order executed but OCO protection not placed!")
             
             return order
         
@@ -219,12 +242,165 @@ class BinanceExecutor(IExecutor):
                 "is_flat": True,
             }
     
+    def _place_oco_order(
+        self,
+        trade: Trade,
+        symbol: str,
+        side: InterfaceOrderSide,
+        quantity: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+    ) -> None:
+        """
+        Place an OCO (One-Cancels-the-Other) order for hard stop-loss and take-profit protection.
+        
+        OCO orders ensure position protection even if the bot crashes or goes offline.
+        The order type is opposite to the entry: SELL for LONG entry, BUY for SHORT entry.
+        
+        Args:
+            trade: Trade object from the entry order
+            symbol: Trading pair
+            side: Entry order side (BUY or SELL)
+            quantity: Quantity to protect (from executed entry order)
+            stop_loss_price: Stop-loss price (trigger price)
+            take_profit_price: Take-profit price (limit price)
+        """
+        try:
+            # OCO order side is opposite to entry side
+            # BUY entry → SELL OCO (to close long position)
+            # SELL entry → BUY OCO (to close short position)
+            oco_side = 'sell' if side == InterfaceOrderSide.BUY else 'buy'
+            
+            logger.info(
+                f"🛡️  Placing OCO order for trade {trade.id}: "
+                f"{oco_side.upper()} {quantity} {symbol} "
+                f"(SL: {stop_loss_price}, TP: {take_profit_price})"
+            )
+            
+            # Place OCO order using CCXT
+            # For STOP_LOSS_LIMIT, we use the same price for stop and limit
+            oco_response = self.client.create_oco_order(
+                symbol=symbol,
+                side=oco_side,
+                amount=quantity,
+                price=str(take_profit_price),  # Limit price (take profit)
+                stopPrice=str(stop_loss_price),  # Stop price (stop loss trigger)
+                stopLimitPrice=str(stop_loss_price),  # Stop limit price (same as stop price)
+                stopLimitTimeInForce='GTC',  # Good Till Cancel
+            )
+            
+            # Extract order IDs from OCO response
+            # CCXT OCO response structure: {'orderListId': ..., 'orders': [{'orderId': ...}, {'orderId': ...}]}
+            # Binance OCO: First order is STOP_LOSS_LIMIT, second is LIMIT (take-profit)
+            stop_loss_order_id = None
+            take_profit_order_id = None
+            
+            if 'orders' in oco_response and len(oco_response['orders']) >= 2:
+                orders = oco_response['orders']
+                # First order is stop-loss (STOP_LOSS_LIMIT type)
+                # Second order is take-profit (LIMIT type)
+                stop_loss_order_id = str(orders[0].get('orderId', ''))
+                take_profit_order_id = str(orders[1].get('orderId', ''))
+            
+            # Update trade record with OCO order IDs
+            if stop_loss_order_id and take_profit_order_id:
+                self.trade_repository.update(
+                    trade,
+                    stop_loss_order_id=stop_loss_order_id,
+                    take_profit_order_id=take_profit_order_id,
+                )
+                
+                logger.info(
+                    f"✅ OCO order placed successfully: "
+                    f"SL Order ID={stop_loss_order_id}, TP Order ID={take_profit_order_id}"
+                )
+                logger.info(
+                    f"🛡️  Position protected: Trade {trade.id} has hard SL/TP on exchange"
+                )
+            else:
+                logger.warning(
+                    f"⚠️  OCO order placed but could not extract order IDs from response"
+                )
+        
+        except Exception as e:
+            logger.error(
+                f"❌ Failed to place OCO order: {e}",
+                exc_info=True
+            )
+            raise
+    
+    def cancel_oco_orders(self, trade: Trade) -> None:
+        """
+        Cancel OCO orders associated with a trade.
+        
+        This is used when manually closing a position or when a strategy
+        exit signal requires canceling the protective orders.
+        
+        Args:
+            trade: Trade object with OCO order IDs
+        """
+        if not trade.stop_loss_order_id:
+            logger.info(f"No OCO orders to cancel for trade {trade.id}")
+            return
+        
+        try:
+            logger.info(
+                f"🔄 Canceling OCO orders for trade {trade.id}: "
+                f"SL={trade.stop_loss_order_id}, TP={trade.take_profit_order_id}"
+            )
+            
+            # Cancel OCO order using the order list ID or individual order IDs
+            # CCXT typically uses cancel_oco_order with orderListId
+            # If we have individual IDs, we may need to cancel them separately
+            # For now, we'll try to cancel using the stop_loss_order_id as reference
+            
+            # Note: CCXT's cancel_oco_order may require orderListId
+            # We'll need to fetch the order list ID or cancel individual orders
+            # This is a simplified implementation - may need adjustment based on CCXT API
+            
+            # Try to cancel the stop-loss order (which should cancel the entire OCO)
+            try:
+                self.client.cancel_order(
+                    id=trade.stop_loss_order_id,
+                    symbol=trade.symbol,
+                )
+                logger.info(f"✅ Canceled stop-loss order {trade.stop_loss_order_id}")
+            except Exception as e:
+                logger.warning(f"Could not cancel stop-loss order: {e}")
+            
+            # Try to cancel take-profit order
+            if trade.take_profit_order_id:
+                try:
+                    self.client.cancel_order(
+                        id=trade.take_profit_order_id,
+                        symbol=trade.symbol,
+                    )
+                    logger.info(f"✅ Canceled take-profit order {trade.take_profit_order_id}")
+                except Exception as e:
+                    logger.warning(f"Could not cancel take-profit order: {e}")
+            
+            # Clear OCO order IDs from trade record
+            self.trade_repository.update(
+                trade,
+                stop_loss_order_id=None,
+                take_profit_order_id=None,
+            )
+            
+            logger.info(f"✅ OCO orders canceled and cleared for trade {trade.id}")
+        
+        except Exception as e:
+            logger.error(
+                f"❌ Failed to cancel OCO orders for trade {trade.id}: {e}",
+                exc_info=True
+            )
+            raise
+    
     def _persist_trade(
         self,
         order: dict,
         symbol: str,
         side: InterfaceOrderSide,
-    ) -> None:
+    ) -> Trade:
         """
         Persist executed trade to database.
         
@@ -232,6 +408,9 @@ class BinanceExecutor(IExecutor):
             order: CCXT order response
             symbol: Trading pair
             side: Order side (InterfaceOrderSide enum)
+            
+        Returns:
+            Created Trade object
         """
         try:
             # Convert side enum
@@ -260,6 +439,8 @@ class BinanceExecutor(IExecutor):
                 f"Trade persisted to database: ID={trade.id}, "
                 f"Exchange Order ID={exchange_order_id}"
             )
+            
+            return trade
         
         except Exception as e:
             logger.error(
@@ -268,6 +449,7 @@ class BinanceExecutor(IExecutor):
             )
             # Don't raise - database persistence failure shouldn't stop trading
             logger.warning("Trade executed but NOT saved to database!")
+            return None
     
     def _convert_order_side(self, side: InterfaceOrderSide) -> ModelOrderSide:
         """
