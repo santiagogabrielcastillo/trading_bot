@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-bot
+    restart: unless-stopped
+    
+    # Environment variables (loaded from .env file)
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_SECRET=${BINANCE_SECRET}
+      - EXECUTION_MODE=${EXECUTION_MODE:-paper}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    
+    # Volumes for persistent data and configuration
+    volumes:
+      # Configuration files (read-only)
+      - ./settings:/app/settings:ro
+      
+      # Data cache for historical data
+      - ./data_cache:/app/data_cache
+      
+      # Log files
+      - ./logs:/app/logs
+      
+      # Database file for trade/signal persistence
+      - ./trading_state.db:/app/trading_state.db
+      
+      # Optional: Backtest results
+      - ./results:/app/results
+    
+    # Resource limits (optional but recommended)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network mode (default bridge)
+    networks:
+      - trading-network
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# Optional: Separate network for isolation
+networks:
+  trading-network:
+    driver: bridge
+

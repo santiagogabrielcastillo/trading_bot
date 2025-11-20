@@ -242,6 +242,9 @@ class BinanceExecutor(IExecutor):
             quantity = float(order.get('filled', 0.0))
             timestamp = datetime.fromtimestamp(order['timestamp'] / 1000) if order.get('timestamp') else datetime.utcnow()
             
+            # Extract exchange order ID for reconciliation
+            exchange_order_id = str(order.get('id', ''))
+            
             # Create trade record
             trade = self.trade_repository.create(
                 symbol=symbol,
@@ -250,9 +253,13 @@ class BinanceExecutor(IExecutor):
                 quantity=quantity,
                 pnl=None,  # PnL calculated later
                 timestamp=timestamp,
+                exchange_order_id=exchange_order_id,
             )
             
-            logger.info(f"Trade persisted to database: ID={trade.id}")
+            logger.info(
+                f"Trade persisted to database: ID={trade.id}, "
+                f"Exchange Order ID={exchange_order_id}"
+            )
         
         except Exception as e:
             logger.error(

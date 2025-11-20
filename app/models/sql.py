@@ -50,10 +50,16 @@ class Trade(Base):
     # Realized profit/loss for this trade (nullable if not yet calculated)
     pnl = Column(Float, nullable=True)
     
+    # External order ID from the exchange (for reconciliation)
+    # For Binance: the order ID from CCXT response
+    # For MockExecutor: a generated fake ID (e.g., "mock_1234567890")
+    exchange_order_id = Column(String(100), nullable=True, index=True)
+    
     def __repr__(self) -> str:
         return (
             f"<Trade(id={self.id[:8]}..., symbol={self.symbol}, "
-            f"side={self.side.value}, price={self.price}, qty={self.quantity})>"
+            f"side={self.side.value}, price={self.price}, qty={self.quantity}, "
+            f"exchange_id={self.exchange_order_id or 'N/A'})>"
         )
 
 

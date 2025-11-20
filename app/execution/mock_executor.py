@@ -7,6 +7,7 @@ while persisting all trades to the database for analysis and tracking.
 from datetime import datetime
 from typing import Optional, Dict
 import uuid
+import time
 
 from app.core.interfaces import IExecutor
 from app.core.enums import OrderSide as InterfaceOrderSide, OrderType
@@ -89,6 +90,9 @@ class MockExecutor(IExecutor):
         # Generate unique order ID
         order_id = str(uuid.uuid4())
         
+        # Generate fake exchange order ID for mock trades
+        fake_exchange_id = f"mock_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        
         # Create timestamp
         now = datetime.utcnow()
         timestamp_ms = int(now.timestamp() * 1000)
@@ -101,6 +105,7 @@ class MockExecutor(IExecutor):
             quantity=quantity,
             pnl=None,  # PnL calculated later when closing position
             timestamp=now,
+            exchange_order_id=fake_exchange_id,
         )
         
         # Update position cache
