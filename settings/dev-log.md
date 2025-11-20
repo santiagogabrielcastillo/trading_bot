@@ -1,9 +1,9 @@
 # DevLog: Python Trading Bot (BTC)
 
 ## Project Status
-- **Current Phase:** 3 - Execution & Production (Paper Trading).
+- **Current Phase:** 3 - Execution & Production (Live Trading).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 8 completed - Stateful Mock Executor).
+- **Health:** Green (Step 9 completed - Live Trading Loop).
 
 ## Progress Log
 
@@ -26,8 +26,8 @@
 ### Phase 3: Execution & Production (Current Focus)
 - [x] **Step 7: Persistence Layer:** SQLAlchemy-based database infrastructure for trade and signal tracking.
 - [x] **Step 8: Stateful Mock Executor:** Paper trading engine with database persistence and position tracking.
+- [x] **Step 9: Live Trading Loop:** TradingBot orchestrator with continuous signal processing and order execution.
 - [ ] Implement `BinanceExecutor` (Real Execution).
-- [ ] Create `main.py` CLI (Live Trading Loop).
 - [ ] Dockerize application (`Dockerfile`, `docker-compose`).
 
 ## Technical Decisions Record
@@ -164,6 +164,44 @@
         - `tests/test_execution.py` - Comprehensive test suite (368 lines, 21 test cases)
     - *Test Results:* All 67 tests pass (21 new execution tests + 46 existing tests).
     - *Test Coverage:* Order execution, database persistence, CCXT structure validation, position tracking (long/short/flat), position cache, multiple symbols, full trading cycles, simulated pricing.
+- **2025-11-20 (Live Trading Loop - Step 9):** Built the orchestrator that brings the bot to life with continuous trading.
+    - *Problem:* Need a robust orchestrator to coordinate data fetching, signal generation, position management, and order execution in a continuous loop for live/paper trading.
+    - *Solution:*
+        1. **TradingBot Class:** Created central orchestrator in `app/core/bot.py` with dependency injection.
+        2. **run_once() Method:** Single iteration: fetch data → calculate indicators → generate signals → check position → execute trades → persist signal.
+        3. **Trading Logic:** Signal-driven execution with duplicate signal filtering and position conflict detection.
+        4. **start() Method:** Infinite loop with exception handling, logging, and configurable sleep intervals.
+        5. **Signal Tracking:** Persists every signal to database with metadata for historical analysis.
+        6. **run_live.py:** Complete dependency injection chain setup and bot runner with CLI arguments.
+    - *Design Decisions:*
+        - Buffer size auto-calculated from strategy params (slow_window + 20)
+        - Last signal tracking to avoid duplicate trades
+        - Order quantity calculated from max_position_size_usd risk parameter
+        - Exception handling: log errors but don't crash (resilient bot)
+        - Signal persistence even if trade execution fails
+        - Standard logging module with clear formatting
+        - CLI modes: --mode mock|live, --config path, --sleep seconds
+    - *Trading Rules:*
+        - Signal 1 (BUY) + Flat position → Execute BUY
+        - Signal -1 (SELL) + Long position → Execute SELL (close)
+        - Signal 0 (NEUTRAL) → No action
+        - Duplicate signals ignored (no repeated trades)
+        - BUY with existing long ignored
+        - SELL with flat position ignored
+    - *Impact:*
+        - Full end-to-end live trading capability
+        - Paper trading ready for production testing
+        - Continuous signal processing and execution
+        - Robust error handling prevents crashes
+        - All trades and signals persisted for analysis
+        - Foundation for adding BinanceExecutor (real exchange)
+        - Can run 24/7 with configurable intervals
+    - *Files:*
+        - `app/core/bot.py` - TradingBot orchestrator (316 lines)
+        - `run_live.py` - Live trading runner with DI chain (217 lines)
+        - `tests/test_trading_bot.py` - Comprehensive test suite (484 lines, 23 test cases)
+    - *Test Results:* All 90 tests pass (23 new bot tests + 67 existing tests).
+    - *Test Coverage:* Bot initialization, run_once() cycle, trading logic, signal persistence, position calculation, indicator extraction, error handling, infinite loop control, full trading cycles.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.

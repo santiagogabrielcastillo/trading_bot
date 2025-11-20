@@ -130,7 +130,33 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
         - `reset_position_cache()` method for testing
     5.  ✅ **Test:** Created `tests/test_execution.py` with 21 comprehensive test cases (all passing).
 
-#### Step 9: Binance Executor (Real Money)
+#### Step 9: The Live Trading Loop (Orchestrator) ✅ COMPLETE
+* **Objective:** Connect all components (Data, Strategy, Executor, DB) into a running loop that reacts to the market in real-time.
+* **Files:** `app/core/bot.py` and `run_live.py`.
+* **Status:** Fully implemented with robust orchestration, error handling, and comprehensive testing.
+* **Completed Tasks:**
+    1.  ✅ **Class `TradingBot`:**
+        - Coordinates Data → Strategy → Execution cycle
+        - `run_once()`: Fetch data → Calculate indicators → Generate signals → Check position → Execute trades → Save signal
+        - `start()`: Infinite loop with exception handling, logging, and configurable sleep
+        - Buffer size auto-calculated from strategy parameters
+        - Last signal tracking to avoid duplicate trades
+    2.  ✅ **Signal Persistence:** Every signal saved to `SignalRepository` with metadata (indicators, price, timestamp)
+    3.  ✅ **Order Logic:**
+        - Signal 1 (BUY) + Flat → Execute BUY
+        - Signal -1 (SELL) + Long → Execute SELL
+        - Signal 0 (NEUTRAL) → No action
+        - Duplicate signals filtered
+        - Position conflicts handled correctly
+    4.  ✅ **Entrypoint (`run_live.py`):**
+        - Complete dependency injection chain
+        - CLI args: --config, --mode (mock/live), --sleep
+        - Loads config, initializes DB, creates all components
+        - Runs bot with error handling
+    5.  ✅ **Test:** Created `tests/test_trading_bot.py` with 23 comprehensive test cases (all passing).
+
+
+#### Step 10: Binance Executor (Real Money)
 * **File:** `app/execution/binance_executor.py`
 * **Requirements:**
     - Use `ccxt` private methods.
