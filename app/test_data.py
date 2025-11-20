@@ -3,10 +3,8 @@ import ccxt
 from app.data.handler import CryptoDataHandler
 
 def test_ingestion():
-    # 1. Instanciamos Binance (público, no requiere API Key para esto)
     exchange = ccxt.binance()
     
-    # 2. Inyectamos la dependencia al Handler
     handler = CryptoDataHandler(exchange)
     
     print("--- Probando Descarga Histórica ---")

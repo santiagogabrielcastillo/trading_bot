@@ -55,6 +55,8 @@ class Backtester:
         df = self.data_handler.get_historical_data(
             symbol=self.symbol,
             timeframe=self.timeframe,
+            start_date=buffer_start,
+            end_date=end_ts,
             limit=total_limit,
         )
 

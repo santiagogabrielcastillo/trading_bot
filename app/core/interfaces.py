@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Optional
 import pandas as pd
 
@@ -11,7 +12,14 @@ from app.config.models import StrategyConfig
 
 class IDataHandler(ABC):
     @abstractmethod
-    def get_historical_data(self, symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
+    def get_historical_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 1000,
+    ) -> pd.DataFrame:
         pass
 
     @abstractmethod

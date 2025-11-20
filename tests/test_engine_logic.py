@@ -31,7 +31,14 @@ class MockDataHandler(IDataHandler):
         """
         self.test_data = test_data.copy()
     
-    def get_historical_data(self, symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
+    def get_historical_data(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 1000,
+    ) -> pd.DataFrame:
         """Return the hardcoded test data."""
         return self.test_data.copy()
     
