@@ -218,8 +218,16 @@ class TradingBot:
         if should_execute and side is not None:
             logger.info(f"EXECUTING TRADE: {reason}")
             
-            # Calculate quantity from config
-            quantity = self._calculate_order_quantity(price)
+            # Calculate quantity:
+            # - For BUY: Calculate from config
+            # - For SELL (closing position): Use exact net_position to fully close
+            if side == OrderSide.SELL and net_position > 0:
+                # Closing long position: sell exact amount we own
+                quantity = net_position
+                logger.info(f"Closing position: selling exact quantity {quantity:.6f}")
+            else:
+                # Opening new position: calculate from config
+                quantity = self._calculate_order_quantity(price)
             
             try:
                 order = self.executor.execute_order(

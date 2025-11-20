@@ -203,5 +203,13 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
 * **Test Results:** All 110 tests passing. Zero linter errors.
 * **Impact:** Bot is now production-ready for Docker deployment with full audit trail and security hardening.
 
-#### Step 11: QA Hooks
-* **Task:** Setup `pre-commit` to run `ruff` (linting) and `mypy` (typing) before every commit.
+#### Step 10.5: System Integration Testing (E2E)
+* **Objective:** Verify the complete "Zero to Hero" flow: Data -> Signal -> Decision -> Database Execution.
+* **File:** `tests/test_system_flow.py`
+* **Tasks:**
+    1.  **Synthetic Market Fixture:** Create a test fixture that generates a DataFrame with a clear "Pump and Dump" pattern (Prices go up, then down) to force signals.
+    2.  **Full Bot Instantiation:** Instantiate `TradingBot` with a real `SQLAlchemy` DB (in-memory), real `SmaCrossStrategy`, real `MockExecutor`, and a *Mocked* `DataHandler`.
+    3.  **Scenario Test:**
+        - Run `bot.run_once()` on "Uptrend Data" -> Assert `trades` count == 1 (BUY).
+        - Run `bot.run_once()` on "Downtrend Data" -> Assert `trades` count == 2 (SELL).
+        - Verify `TradeRepository` has the correct entries (Symbol, Side, Price).
