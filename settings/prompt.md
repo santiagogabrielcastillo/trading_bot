@@ -213,3 +213,46 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
         - Run `bot.run_once()` on "Uptrend Data" -> Assert `trades` count == 1 (BUY).
         - Run `bot.run_once()` on "Downtrend Data" -> Assert `trades` count == 2 (SELL).
         - Verify `TradeRepository` has the correct entries (Symbol, Side, Price).
+
+#### Step 11: APPLY ROBUST PARAMETERS
+**Role:** Configuration Specialist.
+
+**Objective:**
+Update the main strategy configuration file (`settings/config.json`) with the robust parameters identified through the Walk-Forward Optimization (WFO) analysis.
+
+**Specification:**
+
+1.  Locate `settings/config.json`.
+2.  Update the `strategy_config` section for `SmaCrossStrategy` to the following values:
+    * `fast_window`: 10
+    * `slow_window`: 100
+3.  Ensure the configuration file remains valid JSON.
+
+**Rationale:**
+The parameters (10, 100) demonstrated the only positive Sharpe Ratio (0.513) on unseen (Out-of-Sample) data, proving resilience against market regime shifts and high overfitting risk compared to the deceptively higher In-Sample performers.
+
+#### Step 12: VOLATILITY-ADJUSTED STRATEGY (ATR)
+
+**Role:** Senior Quantitative Developer & Strategy Architect.
+
+**Objective:**
+Develop a new, more advanced strategy, `VolatilityAdjustedStrategy`, that is built on the current SMA Cross logic but incorporates the Average True Range (ATR) indicator to manage risk and filter low-volatility entries. This shifts the core design from a simple price-crossing logic to a risk-aware, adaptive system.
+
+**Specification for `app/strategies/atr_strategy.py`:**
+
+1.  **Strategy Class:** Create a new class: `VolatilityAdjustedStrategy` inheriting from `BaseStrategy`.
+2.  **New Pydantic Configuration:** Define a new `StrategyConfig` in `app/config/models.py` for this strategy, including:
+    * `fast_window`: integer (e.g., 10)
+    * `slow_window`: integer (e.g., 100)
+    * `atr_window`: integer (e.g., 14)
+    * `atr_multiplier`: float (e.g., 2.0) - *This will define the initial Stop-Loss distance in multiples of ATR.*
+3.  **Signal Generation Logic (Hybrid):**
+    * **Entry Signal:** A buy signal is generated ONLY if the fast SMA crosses above the slow SMA **AND** the current price is moving (volatility check). A basic volatility check can be: `Current_Price - Price_N_Periods_Ago > 1.0 * Current_ATR`. (Implement a simple version of this volatility filter).
+4.  **Risk Management Integration (Mandatory):**
+    * The primary role of the ATR is to dynamically define the Stop-Loss (SL) level.
+    * When generating a `Signal.BUY`, the generated `Signal` object **must** include an estimated `stop_loss_price`.
+    * The `stop_loss_price` calculation must be: `Entry_Price - (ATR_Multiplier * Current_ATR_Value)`.
+    * The `TradingBot` logic must be updated in a subsequent step to enforce this SL price, but the strategy must provide it now.
+
+**Architectural Impact:**
+This strategy introduces the concept of **dynamic risk sizing** and **volatility filtering**, a necessary architectural pivot to create a robust trading system that goes beyond curve-fitting. This will require modification of the `TradingBot` and `BacktestingEngine` interfaces to accept and process the dynamic SL. (This second modification is reserved for the next prompt).

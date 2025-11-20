@@ -21,6 +21,28 @@ class StrategyConfig(BaseModel):
     timeframe: str = "1h"
     params: dict = Field(default_factory=dict)
 
+
+class VolatilityAdjustedStrategyConfig(BaseModel):
+    """
+    Configuration for Volatility-Adjusted Strategy (ATR-based).
+    
+    This strategy combines SMA crossover with ATR-based volatility filtering
+    and dynamic stop-loss calculation for risk management.
+    """
+    fast_window: int = Field(10, gt=0, description="Fast SMA window period")
+    slow_window: int = Field(100, gt=0, description="Slow SMA window period")
+    atr_window: int = Field(14, gt=0, description="ATR calculation window")
+    atr_multiplier: float = Field(2.0, gt=0, description="ATR multiplier for stop-loss distance")
+    volatility_lookback: int = Field(5, gt=0, description="Lookback period for volatility filter")
+    
+    @field_validator('slow_window')
+    @classmethod
+    def validate_window_relationship(cls, v: int, info) -> int:
+        """Ensure slow window is greater than fast window."""
+        if 'fast_window' in info.data and v <= info.data['fast_window']:
+            raise ValueError("slow_window must be greater than fast_window")
+        return v
+
 class BotConfig(BaseModel):
     """Configuración Global"""
     exchange: ExchangeConfig
