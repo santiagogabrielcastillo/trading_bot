@@ -1,9 +1,9 @@
 # DevLog: Python Trading Bot (BTC)
 
 ## Project Status
-- **Current Phase:** 3 - Execution & Production (Persistence Layer).
+- **Current Phase:** 3 - Execution & Production (Paper Trading).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 7 completed - Persistence Layer).
+- **Health:** Green (Step 8 completed - Stateful Mock Executor).
 
 ## Progress Log
 
@@ -25,9 +25,9 @@
 
 ### Phase 3: Execution & Production (Current Focus)
 - [x] **Step 7: Persistence Layer:** SQLAlchemy-based database infrastructure for trade and signal tracking.
-- [ ] Implement `MockExecutor` (Paper Trading).
+- [x] **Step 8: Stateful Mock Executor:** Paper trading engine with database persistence and position tracking.
 - [ ] Implement `BinanceExecutor` (Real Execution).
-- [ ] Create `main.py` CLI.
+- [ ] Create `main.py` CLI (Live Trading Loop).
 - [ ] Dockerize application (`Dockerfile`, `docker-compose`).
 
 ## Technical Decisions Record
@@ -135,6 +135,35 @@
         - `tests/test_persistence.py` - Comprehensive test suite (386 lines, 20 test cases)
     - *Test Results:* All 46 tests pass (20 new persistence tests + 26 existing tests).
     - *Test Coverage:* CRUD operations, filtering by symbol, date ranges, PnL calculations, signal value filtering, transaction management, singleton pattern verification.
+- **2025-11-20 (Stateful Mock Executor - Step 8):** Built the paper trading engine with database persistence for the "Live Loop".
+    - *Problem:* Need an execution layer for paper trading that simulates real order execution while persisting every action to the database for analysis and debugging.
+    - *Solution:*
+        1. **MockExecutor:** Implemented `IExecutor` interface with simulated order execution (100% fill rate).
+        2. **Database Persistence:** Every `execute_order` call creates a database record via `TradeRepository`.
+        3. **Position Tracking:** `get_position` calculates net position by summing BUYs and SELLs from the database.
+        4. **CCXT Compatibility:** Returns CCXT-like order structure for seamless integration.
+        5. **Position Cache:** In-memory cache for fast position queries, synced with database.
+        6. **Simulated Pricing:** Default prices for testing (BTC=50k, ETH=3k) without exchange connection.
+    - *Design Decisions:*
+        - Constructor dependency injection (TradeRepository, optional SignalRepository)
+        - 100% fill rate for all orders (simplified paper trading)
+        - Position cache updated on every trade for performance
+        - `reset_position_cache()` method for testing and external DB modifications
+        - OrderSide enum conversion between interfaces.py (BUY/SELL) and sql.py (buy/sell)
+        - Simulated prices as placeholder for future live data integration
+    - *Impact:*
+        - Paper trading fully operational with database persistence
+        - Every trade logged to disk for historical analysis
+        - Position tracking across bot restarts
+        - Foundation for live trading loop (main.py)
+        - Can simulate complex trading scenarios in tests
+        - Ready for BinanceExecutor (real exchange) implementation
+    - *Files:*
+        - `app/execution/__init__.py` - Module exports
+        - `app/execution/mock_executor.py` - MockExecutor implementation (234 lines)
+        - `tests/test_execution.py` - Comprehensive test suite (368 lines, 21 test cases)
+    - *Test Results:* All 67 tests pass (21 new execution tests + 46 existing tests).
+    - *Test Coverage:* Order execution, database persistence, CCXT structure validation, position tracking (long/short/flat), position cache, multiple symbols, full trading cycles, simulated pricing.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
