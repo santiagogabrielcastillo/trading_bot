@@ -3,7 +3,7 @@
 ## Project Status
 - **Current Phase:** 3 - Execution & Production (Optimization & Analysis).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 14 completed - Hard Stop Loss & Take Profit with Binance OCO Orders).
+- **Health:** Green (Step 15 completed - Stop-Loss/Take-Profit Enforcement in Backtesting).
 
 ## Progress Log
 
@@ -33,8 +33,14 @@
 - [x] **Step 12: Walk-Forward Validation:** Out-of-Sample validation framework to prevent overfitting and provide quantitative confidence in parameter selection.
 - [x] **Step 13: Volatility-Adjusted Strategy:** ATR-based strategy with dynamic risk management and volatility filtering for market regime adaptation.
 - [x] **Step 14: Hard Stop Loss & Take Profit (OCO Orders):** Binance OCO order implementation for exchange-level risk protection that persists even if bot crashes.
+- [x] **Step 15: Backtesting SL/TP Enforcement:** Stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
 
 ## Technical Decisions Record
+- **2025-11-20 (Backtesting SL/TP Enforcement):** Implemented stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
+    - *Reason:* Backtesting engine only followed strategy signals without enforcing SL/TP exits, causing optimization results to differ significantly from live trading where positions are protected by OCO orders. This led to unrealistic performance metrics and poor parameter selection for production.
+    - *Solution:* Added optional `risk_config` parameter to `Backtester` and implemented `_enforce_sl_tp()` method that processes signals sequentially to track position state. When price hits SL or TP levels, the method overrides strategy signals to force position exit. SL price is extracted from DataFrame if available (strategy-provided, e.g., ATR-based) or calculated from config, while TP is always calculated from config.
+    - *Impact:* Optimization results now reflect realistic risk management behavior, making parameter selection more robust for production. Backtest performance metrics align with live trading expectations. Backward compatible - existing backtests without risk_config continue to work in signal-only mode.
+    - *Files:* `app/backtesting/engine.py` (+120 lines), `tools/optimize_strategy.py` (+40 lines).
 - **2025-11-20 (Hard Stop Loss & Take Profit with OCO Orders):** Implemented exchange-level risk protection using Binance OCO orders for positions opened by the bot.
     - *Reason:* Soft stop-loss/take-profit managed by bot is insufficient for production trading. If bot crashes or goes offline, positions remain unprotected. Need hard protection at exchange level that persists independently of bot state.
     - *Solution:* Modified `BinanceExecutor` to place OCO orders immediately after successful entry orders. OCO orders combine STOP_LOSS_LIMIT and LIMIT orders - when one executes, the other is automatically canceled. Bot extracts SL price from strategy DataFrame (e.g., VolatilityAdjustedStrategy's ATR-based SL) or calculates from config, and calculates TP from config. OCO order IDs are persisted in Trade model for tracking and cancellation.
@@ -429,6 +435,43 @@
         - Cancellation support: `cancel_oco_orders()` method for manual position management
         - Error handling: Comprehensive logging and graceful degradation
 
+15. **Step 15: Backtesting SL/TP Enforcement** *(2025-11-20)*
+    - *Problem:* Backtesting engine only followed strategy signals (BUY/SELL) and did not enforce stop-loss or take-profit exits. This caused optimization results to differ significantly from live trading behavior, where positions are protected by OCO orders. Backtests showed unrealistic performance without risk management.
+    - *Solution:*
+        - **Backtester Enhancement:** Added optional `risk_config` parameter to `Backtester.__init__()` to enable SL/TP enforcement.
+        - **SL/TP Enforcement Method:** Implemented `_enforce_sl_tp()` method that processes signals sequentially to track position state and override signals when SL/TP levels are hit.
+        - **Position Tracking:** Tracks entry price, stop-loss price, and take-profit price for each position.
+        - **Dynamic SL Extraction:** Extracts stop-loss from DataFrame if available (strategy-provided, e.g., ATR-based from VolatilityAdjustedStrategy), otherwise calculates from config (`risk.stop_loss_pct`).
+        - **TP Calculation:** Always calculates take-profit from config (`risk.take_profit_pct`).
+        - **Early Exit Logic:** On each bar, checks if price hit SL (price ≤ stop_loss_price) or TP (price ≥ take_profit_price) and forces SELL signal to exit position.
+        - **Optimization Integration:** Updated `optimize_strategy.py` to load `RiskConfig` from `config.json` and pass it to backtester, enabling SL/TP enforcement in all optimization runs.
+        - **Logging:** Added comprehensive logging showing SL/TP enforcement status and exit statistics.
+    - *Design Decisions:*
+        - Sequential processing: Required to track position state (entry price, SL/TP levels) across bars
+        - Signal override: When SL/TP is hit, overrides strategy signal to force exit (signal = -1)
+        - Strategy-provided SL: Prioritizes DataFrame `stop_loss_price` column (ATR-based) over config-based calculation
+        - Config-based fallback: Uses `risk.stop_loss_pct` if strategy doesn't provide SL price
+        - Optional enforcement: SL/TP enforcement only active if `risk_config` is provided (backward compatible)
+        - Exit statistics: Logs count of SL exits and TP exits for analysis
+    - *Impact:*
+        - **Realistic Backtests:** Optimization results now reflect actual risk management behavior
+        - **Alignment:** Backtest performance metrics align with live trading expectations
+        - **Better Parameter Selection:** Parameters optimized with SL/TP enforcement are more robust for production
+        - **Transparency:** Clear indication in optimization output when SL/TP enforcement is active
+        - **Flexibility:** Supports both strategy-provided (ATR-based) and config-based SL/TP
+        - **Backward Compatible:** Existing backtests without risk_config continue to work (signal-only mode)
+    - *Files:*
+        - `app/backtesting/engine.py` - Added `risk_config` parameter, `_enforce_sl_tp()` method (+120 lines)
+        - `tools/optimize_strategy.py` - Added risk_config loading and passing, SL/TP status logging (+40 lines)
+    - *Test Results:* All existing tests pass (backward compatible implementation).
+    - *Test Coverage:* SL/TP enforcement logic verified through manual testing. Sequential processing correctly tracks position state and overrides signals when SL/TP levels are hit.
+    - *Technical Highlights:*
+        - Position state tracking: Entry price, SL price, TP price tracked across bars
+        - Signal override: Forces SELL signal when SL/TP hit, overriding strategy signals
+        - Price extraction: Strategy DataFrame (stop_loss_price column) or config fallback
+        - Exit statistics: Logs SL/TP exit counts for performance analysis
+        - Integration: Seamless integration with optimization workflow
+
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
 - **Resolved:** Database selection for state persistence - chose SQLite with SQLAlchemy ORM.
@@ -437,6 +480,7 @@
 - **Feature:** Real money trading now available via BinanceExecutor. Use with extreme caution!
 - **Feature:** Volatility-Adjusted Strategy (ATR-based) now available for production use (Step 13).
 - **Feature:** Hard stop-loss and take-profit protection via Binance OCO orders now available (Step 14). Positions protected at exchange level even if bot crashes.
+- **Feature:** Stop-loss and take-profit enforcement in backtesting now available (Step 15). Optimization results align with live trading behavior.
 - **Enhancement:** Automated optimization analysis tool (`tools/analyze_optimization.py`) to generate heatmaps and robustness scores (future).
 - **Enhancement:** Multi-objective optimization (Pareto frontier analysis) balancing return, Sharpe, and drawdown (future).
 - **Enhancement:** Parallel processing for optimization using multiprocessing (4-8x additional speedup) (future).

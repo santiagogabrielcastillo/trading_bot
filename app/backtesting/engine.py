@@ -2,8 +2,12 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Optional, Union
+import logging
 
 from app.core.interfaces import IDataHandler, BaseStrategy
+from app.config.models import RiskConfig
+
+logger = logging.getLogger(__name__)
 
 
 class Backtester:
@@ -20,6 +24,7 @@ class Backtester:
         timeframe: str,
         initial_capital: float = 1.0,
         risk_free_rate: float = 0.0,
+        risk_config: Optional[RiskConfig] = None,
     ) -> None:
         self.data_handler = data_handler
         self.strategy = strategy
@@ -27,6 +32,7 @@ class Backtester:
         self.timeframe = timeframe
         self.initial_capital = initial_capital
         self.risk_free_rate = risk_free_rate
+        self.risk_config = risk_config
 
     def run(
         self,
@@ -71,6 +77,10 @@ class Backtester:
         if df.empty:
             raise ValueError("No market data available for the requested window after indicator calculation.")
 
+        # Enforce stop-loss and take-profit if risk_config is provided
+        if self.risk_config is not None:
+            df = self._enforce_sl_tp(df)
+        
         df["pct_change"] = df["close"].pct_change().fillna(0.0)
         df["shifted_signal"] = df["signal"].shift(1).fillna(0.0)
         df["strategy_return"] = df["shifted_signal"] * df["pct_change"]
@@ -138,6 +148,118 @@ class Backtester:
         bars_needed = window_minutes // minutes_per_candle + 50  # buffer for indicators
         return max(int(bars_needed), 500)  # minimum sensible fetch size
 
+    def _enforce_sl_tp(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Enforce stop-loss and take-profit exits in backtesting.
+        
+        This method processes signals sequentially to track position state
+        and override signals when SL/TP levels are hit.
+        
+        Args:
+            df: DataFrame with signals already generated
+            
+        Returns:
+            DataFrame with signals modified to include SL/TP exits
+        """
+        if df.empty:
+            return df
+        
+        # Create a copy to avoid modifying original
+        df = df.copy()
+        
+        # Track position state
+        in_position = False
+        entry_price = 0.0
+        stop_loss_price = 0.0
+        take_profit_price = 0.0
+        entry_index = None
+        
+        # Track SL/TP exit statistics
+        sl_exits = 0
+        tp_exits = 0
+        
+        # Process each bar sequentially
+        for idx in range(len(df)):
+            current_price = df.iloc[idx]['close']
+            current_signal = df.iloc[idx]['signal']
+            
+            # Check for SL/TP exit if in position
+            if in_position:
+                # Check stop-loss (price dropped to or below SL)
+                if current_price <= stop_loss_price:
+                    # Force exit via stop-loss
+                    df.loc[df.index[idx], 'signal'] = -1
+                    sl_exits += 1
+                    logger.debug(
+                        f"SL hit at {df.index[idx]}: price={current_price:.2f}, "
+                        f"SL={stop_loss_price:.2f}, entry={entry_price:.2f}"
+                    )
+                    in_position = False
+                    entry_price = 0.0
+                    stop_loss_price = 0.0
+                    take_profit_price = 0.0
+                    continue
+                
+                # Check take-profit (price rose to or above TP)
+                if current_price >= take_profit_price:
+                    # Force exit via take-profit
+                    df.loc[df.index[idx], 'signal'] = -1
+                    tp_exits += 1
+                    logger.debug(
+                        f"TP hit at {df.index[idx]}: price={current_price:.2f}, "
+                        f"TP={take_profit_price:.2f}, entry={entry_price:.2f}"
+                    )
+                    in_position = False
+                    entry_price = 0.0
+                    stop_loss_price = 0.0
+                    take_profit_price = 0.0
+                    continue
+            
+            # Handle entry signals
+            if current_signal == 1 and not in_position:
+                # BUY signal - enter position
+                entry_price = current_price
+                
+                # Extract stop-loss from DataFrame if available (strategy-provided)
+                if 'stop_loss_price' in df.columns:
+                    sl_price = df.iloc[idx]['stop_loss_price']
+                    if pd.notna(sl_price) and sl_price > 0:
+                        stop_loss_price = float(sl_price)
+                    else:
+                        # Fallback to config-based SL
+                        stop_loss_price = entry_price * (1 - self.risk_config.stop_loss_pct)
+                else:
+                    # Calculate from config
+                    stop_loss_price = entry_price * (1 - self.risk_config.stop_loss_pct)
+                
+                # Calculate take-profit from config
+                take_profit_price = entry_price * (1 + self.risk_config.take_profit_pct)
+                
+                in_position = True
+                entry_index = idx
+                
+                logger.debug(
+                    f"Position entered at {df.index[idx]}: entry={entry_price:.2f}, "
+                    f"SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}"
+                )
+            
+            # Handle exit signals (strategy-generated SELL)
+            elif current_signal == -1 and in_position:
+                # SELL signal - exit position
+                in_position = False
+                entry_price = 0.0
+                stop_loss_price = 0.0
+                take_profit_price = 0.0
+        
+        # Log summary
+        if sl_exits > 0 or tp_exits > 0:
+            logger.info(
+                f"Backtest SL/TP enforcement: {sl_exits} SL exits, {tp_exits} TP exits "
+                f"out of {len(df)} bars"
+            )
+        
+        return df
+    
     @staticmethod
     def _timeframe_to_minutes(timeframe: str) -> Optional[int]:
         """

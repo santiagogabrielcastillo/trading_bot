@@ -41,7 +41,7 @@ from app.core.interfaces import IDataHandler, BaseStrategy
 from app.backtesting.engine import Backtester
 from app.strategies.sma_cross import SmaCrossStrategy
 from app.strategies.atr_strategy import VolatilityAdjustedStrategy
-from app.config.models import StrategyConfig, BotConfig
+from app.config.models import StrategyConfig, BotConfig, RiskConfig
 from app.execution.mock_executor import MockExecutor
 
 
@@ -167,6 +167,7 @@ class StrategyOptimizer:
         split_date: Optional[str] = None,
         initial_capital: float = 1.0,
         base_strategy_config: Optional[StrategyConfig] = None,
+        risk_config: Optional[RiskConfig] = None,
     ):
         """
         Initialize the optimizer.
@@ -188,6 +189,7 @@ class StrategyOptimizer:
         self.split_date = split_date
         self.initial_capital = initial_capital
         self.base_strategy_config = base_strategy_config
+        self.risk_config = risk_config
         
         # Validate split_date if provided
         if self.split_date:
@@ -579,6 +581,7 @@ class StrategyOptimizer:
             symbol=self.symbol,
             timeframe=self.timeframe,
             initial_capital=self.initial_capital,
+            risk_config=self.risk_config,
         )
         
         # Run backtest
@@ -778,6 +781,20 @@ Examples:
         print("STRATEGY CONFIGURATION")
         print("=" * 70)
         
+        # Load full config to get risk settings
+        risk_config = None
+        try:
+            bot_config = BotConfig.load_from_file("settings/config.json")
+            risk_config = bot_config.risk
+            print(f"✓ Risk config loaded from config.json:")
+            print(f"  Stop Loss:    {risk_config.stop_loss_pct*100:.1f}%")
+            print(f"  Take Profit:  {risk_config.take_profit_pct*100:.1f}%")
+            print()
+        except Exception as e:
+            print(f"⚠ Warning: Could not load risk config from config.json: {e}")
+            print("  SL/TP enforcement will be disabled in backtests")
+            print()
+        
         try:
             strategy, strategy_config = load_strategy_from_config()
             print(f"✓ Strategy loaded from config.json:")
@@ -817,7 +834,26 @@ Examples:
         print(f"  Slow Range:  {slow_range}")
         print()
         
-        # Create optimizer with strategy config
+        if risk_config:
+            print("=" * 70)
+            print("🛡️  RISK MANAGEMENT: Stop-Loss/Take-Profit ENABLED")
+            print("=" * 70)
+            print("✓ SL/TP enforcement is ACTIVE in backtests")
+            print(f"  Stop Loss:    {risk_config.stop_loss_pct*100:.1f}%")
+            print(f"  Take Profit:  {risk_config.take_profit_pct*100:.1f}%")
+            if 'stop_loss_price' in strategy_config.params or hasattr(strategy, 'get_stop_loss_price'):
+                print(f"  Strategy '{strategy_config.name}' provides dynamic stop-loss (ATR-based)")
+            print("  Positions will exit early when SL/TP levels are hit")
+            print()
+        else:
+            print("=" * 70)
+            print("⚠️  BACKTESTING MODE: Stop-Loss/Take-Profit NOT Enforced")
+            print("=" * 70)
+            print("Note: Risk config not loaded. SL/TP enforcement disabled.")
+            print("      Backtests will only follow strategy signals.")
+            print()
+        
+        # Create optimizer with strategy config and risk config
         optimizer = StrategyOptimizer(
             symbol=args.symbol,
             timeframe=args.timeframe,
@@ -825,6 +861,7 @@ Examples:
             end_date=args.end_date,
             split_date=args.split_date,
             base_strategy_config=strategy_config,
+            risk_config=risk_config,
         )
         
         # STEP 1: Load data ONCE
