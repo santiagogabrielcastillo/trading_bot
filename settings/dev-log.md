@@ -2,8 +2,8 @@
 
 ## Project Status
 - **Current Phase:** 2 - Simulation Engine (Backtesting).
-- **Last Update:** 2025-01-XX.
-- **Health:** Green (Critical hotfixes completed).
+- **Last Update:** 2025-11-20.
+- **Health:** Green (Step 5.5 completed - Time-Aware Data Refactor).
 
 ## Progress Log
 
@@ -20,6 +20,7 @@
 - [x] Create `run_backtest.py` entry script.
 - [x] **CRITICAL HOTFIXES:** Fixed Sharpe Ratio annualization, Data Pagination, and Look-Ahead Bias.
 - [x] **Step 5: Simulation Hardening:** Implemented offline data caching and unit testing suite.
+- [x] **Step 5.5: Time-Aware Data Refactor:** Fixed recency bias to allow backtesting specific historical periods.
 - [ ] Validate Strategy Metrics (Sharpe, Drawdown).
 
 ### Phase 3: Execution & Production
@@ -64,6 +65,21 @@
     - *Implementation:* `MockDataHandler` and `MockStrategy` classes for isolated testing. Tests verify equity curve calculations and Sharpe ratio annualization with known data.
     - *Impact:* Backtester math is now mathematically proven correct. All tests pass.
     - *Files:* `tests/test_engine_logic.py` - Created test suite with 3 test cases covering equity calculation, Sharpe ratio, and buy-hold scenarios.
+- **2025-11-20 (Time-Aware Data Refactor - Step 5.5):** Implemented date-range-aware data fetching to fix "recency bias" in historical backtests.
+    - *Problem:* Previous implementation only fetched recent data, making it impossible to backtest specific historical periods (e.g., "test strategy on 2022 data").
+    - *Solution:* 
+        1. Updated `IDataHandler.get_historical_data()` signature to accept `start_date` and `end_date` parameters.
+        2. Implemented forward-fetching logic in `CryptoDataHandler._fetch_forward_range()` that starts from `start_date` and increments forward using `since` parameter.
+        3. Enhanced cache validation in `_cache_covers_range()` to verify cache by date range (`cache.min() <= start` AND `cache.max() >= end`), not just by length.
+        4. Maintained backward-fetching as fallback in `_fetch_recent_range()` for live trading scenarios where no explicit dates are provided.
+    - *Impact:* Backtests can now target any historical period. Cache is date-aware and won't incorrectly reuse data from wrong time periods.
+    - *Files:* 
+        - `app/core/interfaces.py` - Updated interface signature (already had correct signature).
+        - `app/data/handler.py` - Implemented `_fetch_forward_range()`, `_fetch_recent_range()`, enhanced `_cache_covers_range()`.
+        - `app/backtesting/engine.py` - Updated to pass `start_date` and `end_date` to data handler.
+        - `tests/test_engine_logic.py` - Updated `MockDataHandler` to match new signature.
+        - `tests/test_time_aware_data.py` - Created comprehensive integration tests (5 test cases) covering forward fetching, cache validation, backward compatibility, and integration with backtester.
+    - *Test Results:* All 8 tests pass (3 existing + 5 new integration tests).
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.

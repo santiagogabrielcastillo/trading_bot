@@ -77,6 +77,16 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
     * Create `tests/test_engine_logic.py`.
     * **Test Case:** Create a manual DataFrame (e.g., 10 rows) with known prices and known signals. Calculate expected PnL manually. Run `Backtester` on it. Assert results match exactly.
 
+#### Step 5.5: Time-Aware Data Refactor (CRITICAL)
+* **Objective:** Fix the "Recency Bias" in data fetching to allow backtesting specific historical periods (e.g., 2022).
+* **Tasks:**
+    1.  **Update Interface:** `IDataHandler.get_historical_data` must accept `start_date` and `end_date`.
+    2.  **Refactor Handler:**
+        - If `start_date` is present, fetch FORWARD from that date using `since` parameter in CCXT.
+        - Stop fetching when `end_date` is reached.
+        - **Smart Caching:** Verify cache by DATE RANGE (`min_date <= start` and `max_date >= end`), not just by length.
+    3.  **Update Engine:** Pass the calculation start date to the handler.
+
 #### Step 6: Backtest Runner Refinement
 * **File:** `run_backtest.py`
 * **Task:** Update the script to use the new "Offline Mode" by default to speed up iteration.
