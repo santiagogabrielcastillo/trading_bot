@@ -6,17 +6,18 @@ This directory contains utility scripts and tools for analyzing and managing the
 
 ### 1. Strategy Parameter Optimizer (`optimize_strategy.py`)
 
-A powerful grid search optimization tool for finding optimal strategy parameters.
+A powerful grid search optimization tool with walk-forward validation for finding robust strategy parameters.
 
 #### Features
 
 - **"Load Once, Compute Many"** architecture for maximum efficiency
+- **Walk-Forward Validation**: In-Sample/Out-of-Sample testing to prevent overfitting
 - **Cached Data Handler**: Pre-loads data once, serves from memory for all iterations
 - **Grid Search**: Exhaustive search over parameter combinations
 - **Smart Filtering**: Automatically skips invalid parameter combinations
 - **Real-time Progress**: Live updates on optimization progress
 - **Sorted Results**: Automatically ranks by Sharpe ratio
-- **Comprehensive Output**: JSON export with metadata and full results
+- **Comprehensive Output**: JSON export with metadata and full results (including IS/OOS metrics)
 
 #### Key Innovation: Zero API Overhead
 
@@ -33,6 +34,7 @@ Our approach:
 
 #### Usage
 
+##### Standard Optimization
 ```bash
 # Basic usage (BTC/USDT, 1h, 2023 data)
 poetry run python tools/optimize_strategy.py
@@ -45,13 +47,39 @@ poetry run python tools/optimize_strategy.py --symbol ETH/USDT --timeframe 4h
 
 # Custom parameter ranges
 poetry run python tools/optimize_strategy.py --fast 5,10,15,20 --slow 30,40,50,60
+```
 
-# Save to custom location
-poetry run python tools/optimize_strategy.py -o results/my_optimization.json
+##### Walk-Forward Optimization (Recommended for Production)
+```bash
+# Basic walk-forward validation
+poetry run python tools/optimize_strategy.py \
+  --start-date 2023-01-01 \
+  --end-date 2023-12-31 \
+  --split-date 2023-10-01
+
+# Validate top 10 performers (instead of default 5)
+poetry run python tools/optimize_strategy.py \
+  --start-date 2023-01-01 \
+  --end-date 2023-12-31 \
+  --split-date 2023-10-01 \
+  --top-n 10
+
+# Complete example with custom output
+poetry run python tools/optimize_strategy.py \
+  --symbol BTC/USDT \
+  --timeframe 1h \
+  --start-date 2023-01-01 \
+  --end-date 2023-12-31 \
+  --split-date 2023-10-01 \
+  --fast 5,10,15,20 \
+  --slow 30,40,50,60 \
+  -o results/walk_forward_btc_2023.json
 
 # View all options
 poetry run python tools/optimize_strategy.py --help
 ```
+
+**See:** [Walk-Forward Validation Guide](../docs/WALK_FORWARD_GUIDE.md) for comprehensive documentation on preventing overfitting.
 
 #### Default Parameter Ranges
 

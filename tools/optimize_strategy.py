@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """
-Strategy Parameter Optimization Tool (Grid Search)
+Strategy Parameter Optimization Tool (Grid Search with Walk-Forward Validation)
 
 This script performs exhaustive grid search optimization for trading strategy parameters
-using the "Load Once, Compute Many" pattern for maximum efficiency.
+using the "Load Once, Compute Many" pattern for maximum efficiency, with optional
+In-Sample/Out-of-Sample validation to prevent overfitting.
 
 Architecture:
     1. Load historical data EXACTLY ONCE from the exchange
     2. Cache it in memory
     3. Mock the data handler to serve the cached data for all backtest iterations
-    4. Iterate through parameter combinations
-    5. Save sorted results by Sharpe ratio
+    4. Phase 1 (In-Sample): Iterate through parameter combinations on training data
+    5. Phase 2 (Out-of-Sample): Validate top performers on unseen test data
+    6. Save results with both IS and OOS metrics
 
 Usage:
-    python tools/optimize_strategy.py
+    # Standard optimization (no validation)
     python tools/optimize_strategy.py --start-date 2023-01-01 --end-date 2023-12-31
+    
+    # Walk-forward optimization with OOS validation
+    python tools/optimize_strategy.py --start-date 2023-01-01 --end-date 2023-12-31 --split-date 2023-10-01
 """
 
 import argparse
@@ -115,6 +120,7 @@ class StrategyOptimizer:
         timeframe: str = "1h",
         start_date: str = "2023-01-01",
         end_date: str = "2023-12-31",
+        split_date: Optional[str] = None,
         initial_capital: float = 1.0,
     ):
         """
@@ -125,13 +131,28 @@ class StrategyOptimizer:
             timeframe: Candle timeframe (e.g., '1h')
             start_date: Backtest start date (YYYY-MM-DD)
             end_date: Backtest end date (YYYY-MM-DD)
+            split_date: Optional split date for walk-forward validation (YYYY-MM-DD)
+                       If provided, enables In-Sample/Out-of-Sample validation
             initial_capital: Initial capital for backtests (normalized to 1.0)
         """
         self.symbol = symbol
         self.timeframe = timeframe
         self.start_date = start_date
         self.end_date = end_date
+        self.split_date = split_date
         self.initial_capital = initial_capital
+        
+        # Validate split_date if provided
+        if self.split_date:
+            start_ts = pd.to_datetime(self.start_date)
+            end_ts = pd.to_datetime(self.end_date)
+            split_ts = pd.to_datetime(self.split_date)
+            
+            if split_ts <= start_ts or split_ts >= end_ts:
+                raise ValueError(
+                    f"split_date ({self.split_date}) must be between "
+                    f"start_date ({self.start_date}) and end_date ({self.end_date})"
+                )
         
         # Results storage
         self.results: List[Dict[str, Any]] = []
@@ -279,6 +300,175 @@ class StrategyOptimizer:
         
         return self.results
     
+    def optimize_with_validation(
+        self,
+        fast_window_range: List[int],
+        slow_window_range: List[int],
+        top_n: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform grid search with In-Sample/Out-of-Sample validation.
+        
+        Two-phase execution:
+        1. Phase 1 (In-Sample): Run full grid search on data from start_date to split_date
+        2. Phase 2 (Out-of-Sample): Validate top N performers on data from split_date to end_date
+        
+        Args:
+            fast_window_range: List of fast SMA window values to test
+            slow_window_range: List of slow SMA window values to test
+            top_n: Number of top performers to validate (default: 5)
+        
+        Returns:
+            List of top N results with both IS and OOS metrics
+        """
+        if self.cached_data is None:
+            raise RuntimeError("Data not loaded. Call load_data_once() first.")
+        
+        if not self.split_date:
+            raise RuntimeError("split_date must be provided for walk-forward validation")
+        
+        print("=" * 70)
+        print("WALK-FORWARD OPTIMIZATION WITH OUT-OF-SAMPLE VALIDATION")
+        print("=" * 70)
+        print(f"In-Sample Period:  {self.start_date} to {self.split_date}")
+        print(f"Out-of-Sample:     {self.split_date} to {self.end_date}")
+        print()
+        
+        # ========== PHASE 1: IN-SAMPLE OPTIMIZATION ==========
+        print("=" * 70)
+        print("PHASE 1: IN-SAMPLE GRID SEARCH")
+        print("=" * 70)
+        
+        # Generate all parameter combinations
+        param_combinations = list(itertools.product(fast_window_range, slow_window_range))
+        
+        # Filter out invalid combinations (fast >= slow)
+        valid_combinations = [
+            (fast, slow) for fast, slow in param_combinations
+            if fast < slow
+        ]
+        
+        total_tests = len(valid_combinations)
+        print(f"Parameter Space:")
+        print(f"  Fast Window: {fast_window_range}")
+        print(f"  Slow Window: {slow_window_range}")
+        print(f"  Total Combinations: {len(param_combinations)}")
+        print(f"  Valid Combinations: {total_tests} (fast < slow)")
+        print()
+        
+        # Create cached data handler (used for ALL iterations)
+        cached_handler = CachedDataHandler(
+            cached_data=self.cached_data,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+        )
+        
+        # Store In-Sample results
+        is_results: List[Dict[str, Any]] = []
+        
+        # Run backtest for each valid combination on IN-SAMPLE period
+        for idx, (fast_window, slow_window) in enumerate(valid_combinations, start=1):
+            try:
+                result = self._run_single_backtest(
+                    cached_handler=cached_handler,
+                    fast_window=fast_window,
+                    slow_window=slow_window,
+                    iteration=idx,
+                    total=total_tests,
+                    start_date=self.start_date,
+                    end_date=self.split_date,
+                    phase="IS",
+                )
+                is_results.append(result)
+                
+            except Exception as e:
+                print(f"  ✗ Error in iteration [{idx}/{total_tests}]: {e}")
+                continue
+        
+        # Sort IS results by Sharpe ratio (descending)
+        is_results.sort(key=lambda x: x['metrics'].get('sharpe_ratio', float('-inf')), reverse=True)
+        
+        print()
+        print("=" * 70)
+        print("IN-SAMPLE OPTIMIZATION COMPLETE")
+        print("=" * 70)
+        print(f"Total successful runs: {len(is_results)}/{total_tests}")
+        
+        if not is_results:
+            print("\n✗ No successful backtests in IS period. Cannot proceed with validation.")
+            return []
+        
+        # Select top N performers
+        top_performers = is_results[:min(top_n, len(is_results))]
+        
+        print(f"\nTop {len(top_performers)} In-Sample Performers:")
+        for rank, result in enumerate(top_performers, start=1):
+            params = result['params']
+            metrics = result['metrics']
+            print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d} "
+                  f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
+        
+        # ========== PHASE 2: OUT-OF-SAMPLE VALIDATION ==========
+        print()
+        print("=" * 70)
+        print("PHASE 2: OUT-OF-SAMPLE VALIDATION")
+        print("=" * 70)
+        print(f"Validating top {len(top_performers)} configurations on unseen data...")
+        print()
+        
+        # Validate each top performer on OOS period
+        validated_results: List[Dict[str, Any]] = []
+        
+        for idx, is_result in enumerate(top_performers, start=1):
+            params = is_result['params']
+            fast_window = params['fast_window']
+            slow_window = params['slow_window']
+            
+            try:
+                oos_result = self._run_single_backtest(
+                    cached_handler=cached_handler,
+                    fast_window=fast_window,
+                    slow_window=slow_window,
+                    iteration=idx,
+                    total=len(top_performers),
+                    start_date=self.split_date,
+                    end_date=self.end_date,
+                    phase="OOS",
+                )
+                
+                # Combine IS and OOS metrics
+                validated_entry = {
+                    'params': params,
+                    'IS_metrics': is_result['metrics'],
+                    'OOS_metrics': oos_result['metrics'],
+                }
+                validated_results.append(validated_entry)
+                
+            except Exception as e:
+                print(f"  ✗ Error validating [{idx}/{len(top_performers)}]: {e}")
+                continue
+        
+        print()
+        print("=" * 70)
+        print("WALK-FORWARD VALIDATION COMPLETE")
+        print("=" * 70)
+        print(f"Successfully validated: {len(validated_results)}/{len(top_performers)}")
+        
+        if validated_results:
+            print(f"\nValidation Results (sorted by IS Sharpe):")
+            print(f"{'Rank':<6} {'Params':<15} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
+            print("-" * 70)
+            for rank, result in enumerate(validated_results, start=1):
+                params = result['params']
+                is_m = result['IS_metrics']
+                oos_m = result['OOS_metrics']
+                print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d}){'':<8} "
+                      f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
+                      f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
+        
+        self.results = validated_results
+        return validated_results
+    
     def _run_single_backtest(
         self,
         cached_handler: CachedDataHandler,
@@ -286,6 +476,9 @@ class StrategyOptimizer:
         slow_window: int,
         iteration: int,
         total: int,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        phase: str = "",
     ) -> Dict[str, Any]:
         """
         Run a single backtest iteration with specific parameters.
@@ -296,10 +489,17 @@ class StrategyOptimizer:
             slow_window: Slow SMA period
             iteration: Current iteration number
             total: Total number of iterations
+            start_date: Optional override for backtest start date
+            end_date: Optional override for backtest end date
+            phase: Optional phase label (e.g., "IS", "OOS") for logging
         
         Returns:
             Dictionary with params and metrics
         """
+        # Use override dates if provided, otherwise use instance defaults
+        bt_start = start_date or self.start_date
+        bt_end = end_date or self.end_date
+        
         # Create strategy config with current parameters
         strategy_config = StrategyConfig(
             name="sma_cross",
@@ -325,8 +525,8 @@ class StrategyOptimizer:
         
         # Run backtest
         metrics = backtester.run(
-            start_date=self.start_date,
-            end_date=self.end_date,
+            start_date=bt_start,
+            end_date=bt_end,
         )
         
         # Extract metrics (remove 'data' field to save space)
@@ -340,7 +540,8 @@ class StrategyOptimizer:
         sharpe = result_metrics['sharpe_ratio']
         sharpe_str = f"{sharpe:.3f}" if not pd.isna(sharpe) else "N/A"
         
-        print(f"  [{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d} "
+        phase_str = f"[{phase}] " if phase else ""
+        print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d} "
               f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
         
         return {
@@ -373,15 +574,26 @@ class StrategyOptimizer:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
         # Prepare output data
+        metadata = {
+            'timestamp': datetime.now().isoformat(),
+            'symbol': self.symbol,
+            'timeframe': self.timeframe,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'total_combinations_tested': len(self.results),
+        }
+        
+        # Add split_date to metadata if walk-forward validation was used
+        if self.split_date:
+            metadata['split_date'] = self.split_date
+            metadata['validation_mode'] = 'walk_forward'
+            metadata['in_sample_period'] = f"{self.start_date} to {self.split_date}"
+            metadata['out_of_sample_period'] = f"{self.split_date} to {self.end_date}"
+        else:
+            metadata['validation_mode'] = 'standard'
+        
         output_data = {
-            'metadata': {
-                'timestamp': datetime.now().isoformat(),
-                'symbol': self.symbol,
-                'timeframe': self.timeframe,
-                'start_date': self.start_date,
-                'end_date': self.end_date,
-                'total_combinations_tested': len(self.results),
-            },
+            'metadata': metadata,
             'results': self.results,
         }
         
@@ -420,14 +632,19 @@ def main() -> int:
         Exit code (0 for success, non-zero for failure)
     """
     parser = argparse.ArgumentParser(
-        description='Optimize trading strategy parameters using grid search',
+        description='Optimize trading strategy parameters using grid search with optional walk-forward validation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Standard optimization (no validation)
   %(prog)s
   %(prog)s --start-date 2023-01-01 --end-date 2023-12-31
   %(prog)s --symbol ETH/USDT --timeframe 4h
   %(prog)s --fast 5,10,15,20 --slow 30,40,50,60
+  
+  # Walk-forward optimization with Out-of-Sample validation
+  %(prog)s --start-date 2023-01-01 --end-date 2023-12-31 --split-date 2023-10-01
+  %(prog)s --start-date 2023-01-01 --end-date 2024-01-01 --split-date 2023-07-01 --top-n 10
         """
     )
     
@@ -457,6 +674,22 @@ Examples:
         type=str,
         default='2023-12-31',
         help='Backtest end date YYYY-MM-DD (default: 2023-12-31)'
+    )
+    
+    parser.add_argument(
+        '--split-date',
+        type=str,
+        default=None,
+        help='Optional split date for walk-forward validation YYYY-MM-DD. '
+             'If provided, runs In-Sample optimization from start-date to split-date, '
+             'then validates top performers Out-of-Sample from split-date to end-date.'
+    )
+    
+    parser.add_argument(
+        '--top-n',
+        type=int,
+        default=5,
+        help='Number of top performers to validate in OOS period (default: 5, only used with --split-date)'
     )
     
     parser.add_argument(
@@ -492,23 +725,36 @@ Examples:
             timeframe=args.timeframe,
             start_date=args.start_date,
             end_date=args.end_date,
+            split_date=args.split_date,
         )
         
         # STEP 1: Load data ONCE
         optimizer.load_data_once()
         
         # STEP 2: Run optimization (Compute Many)
-        results = optimizer.optimize(
-            fast_window_range=fast_range,
-            slow_window_range=slow_range,
-        )
+        if args.split_date:
+            # Walk-forward optimization with In-Sample/Out-of-Sample validation
+            results = optimizer.optimize_with_validation(
+                fast_window_range=fast_range,
+                slow_window_range=slow_range,
+                top_n=args.top_n,
+            )
+        else:
+            # Standard optimization (no validation)
+            results = optimizer.optimize(
+                fast_window_range=fast_range,
+                slow_window_range=slow_range,
+            )
         
         # STEP 3: Save results
         output_path = optimizer.save_results(output_path=args.output)
         
         print(f"\n✓ Optimization complete!")
         print(f"  Next step: Analyze results in {output_path}")
-        print(f"  Use: python tools/analyze_optimization.py {output_path}")
+        if args.split_date:
+            print(f"  Review IS/OOS metrics to identify robust parameters")
+        else:
+            print(f"  Use: python tools/analyze_optimization.py {output_path}")
         
         return 0
         

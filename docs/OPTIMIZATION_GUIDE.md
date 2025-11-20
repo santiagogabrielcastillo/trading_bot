@@ -14,7 +14,7 @@ The optimization system implements the **"Load Once, Compute Many"** pattern for
 
 ## Quick Start
 
-### Basic Usage
+### Basic Usage (Standard Optimization)
 
 ```bash
 # Run optimization with default settings (BTC/USDT, 1h, 2023 data)
@@ -29,6 +29,32 @@ poetry run python tools/optimize_strategy.py --symbol ETH/USDT --timeframe 4h
 # Custom parameter ranges
 poetry run python tools/optimize_strategy.py --fast 5,10,15,20 --slow 30,40,50,60
 ```
+
+### Walk-Forward Optimization (Recommended for Production)
+
+**Prevents overfitting** by validating top performers on unseen data:
+
+```bash
+# Run optimization with In-Sample/Out-of-Sample validation
+poetry run python tools/optimize_strategy.py \
+  --start-date 2023-01-01 \
+  --end-date 2023-12-31 \
+  --split-date 2023-10-01
+
+# Custom top-N validation (validate top 10 instead of default 5)
+poetry run python tools/optimize_strategy.py \
+  --start-date 2023-01-01 \
+  --end-date 2023-12-31 \
+  --split-date 2023-10-01 \
+  --top-n 10
+```
+
+**What this does:**
+- Optimizes parameters on data from start-date to split-date (In-Sample)
+- Validates top N performers on data from split-date to end-date (Out-of-Sample)
+- Outputs results with both IS and OOS metrics for robustness analysis
+
+**See:** [WALK_FORWARD_GUIDE.md](WALK_FORWARD_GUIDE.md) for comprehensive walk-forward validation documentation.
 
 ### View All Options
 
@@ -355,6 +381,8 @@ param_combinations = list(itertools.product(
 ## References
 
 - Main optimization script: `tools/optimize_strategy.py`
+- Walk-forward validation guide: `docs/WALK_FORWARD_GUIDE.md` **← Recommended for production**
+- Complete workflow example: `docs/OPTIMIZATION_EXAMPLE.md`
 - Analysis guide: `settings/optimization_analysis_prompt.md`
 - Strategy implementation: `app/strategies/sma_cross.py`
 - Backtesting engine: `app/backtesting/engine.py`
