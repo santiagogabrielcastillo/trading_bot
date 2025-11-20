@@ -5,8 +5,22 @@ Live trading runner for the trading bot.
 This script orchestrates the full dependency injection chain and starts
 the live trading loop with paper trading (MockExecutor) or real execution.
 
+The execution mode is determined by the 'execution_mode' field in config.json:
+  - "paper": Paper trading with MockExecutor (safe, no real money)
+  - "live": Real trading with BinanceExecutor (⚠️ REAL MONEY AT RISK!)
+
 Usage:
-    python run_live.py [--config path/to/config.json] [--mode mock|live]
+    python run_live.py [--config path/to/config.json] [--sleep SECONDS]
+    
+Examples:
+    # Paper trading (default)
+    python run_live.py
+    
+    # Live trading (requires config.json with execution_mode: "live")
+    python run_live.py --config settings/live_config.json
+    
+    # Custom sleep interval (30 seconds)
+    python run_live.py --sleep 30
 """
 import argparse
 import logging
@@ -16,11 +30,14 @@ from pathlib import Path
 from app.config.models import BotConfig
 from app.core.database import init_db, db
 from app.core.bot import TradingBot
+from app.core.interfaces import IExecutor
 from app.data.handler import CryptoDataHandler
 from app.strategies.sma_cross import SmaCrossStrategy
 from app.execution.mock_executor import MockExecutor
+from app.execution.binance_executor import BinanceExecutor
 from app.repositories.trade_repository import TradeRepository
 from app.repositories.signal_repository import SignalRepository
+import ccxt
 
 
 # Configure logging
@@ -33,20 +50,19 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """
+    Parse command-line arguments.
+    
+    Note: Execution mode is now determined by config.execution_mode,
+    not by a CLI argument.
+    """
     parser = argparse.ArgumentParser(
-        description="Run the live trading bot with paper or real execution."
+        description="Run the live trading bot. Execution mode (paper/live) is set in config.json."
     )
     parser.add_argument(
         "--config",
         default=str(Path(__file__).parent / "settings" / "config.json"),
         help="Path to the bot configuration file (default: settings/config.json)",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["mock", "live"],
-        default="mock",
-        help="Execution mode: 'mock' for paper trading, 'live' for real execution (default: mock)",
     )
     parser.add_argument(
         "--sleep",
@@ -83,6 +99,13 @@ def load_config(config_path: str) -> BotConfig:
     logger.info(f"  Timeframe: {config.strategy.timeframe}")
     logger.info(f"  Strategy: {config.strategy.name}")
     logger.info(f"  Database: {config.db_path}")
+    logger.info(f"  Execution Mode: {config.execution_mode.upper()}")
+    
+    if config.execution_mode == "live":
+        logger.warning("=" * 70)
+        logger.warning("⚠️  WARNING: LIVE TRADING MODE CONFIGURED!")
+        logger.warning("⚠️  REAL MONEY WILL BE AT RISK!")
+        logger.warning("=" * 70)
     
     return config
 
@@ -143,36 +166,66 @@ def create_strategy(config: BotConfig) -> SmaCrossStrategy:
     return strategy
 
 
-def create_executor(mode: str, config: BotConfig) -> MockExecutor:
+def create_executor(config: BotConfig) -> IExecutor:
     """
-    Create the order executor based on mode.
+    Create the order executor based on configuration.
+    
+    Uses config.execution_mode to determine which executor to create:
+    - "paper": MockExecutor for simulated trading
+    - "live": BinanceExecutor for real money trading
     
     Args:
-        mode: Execution mode ('mock' or 'live')
         config: Bot configuration
         
     Returns:
-        Executor instance (MockExecutor for now)
-        
-    Note:
-        'live' mode not yet implemented - will create BinanceExecutor in future.
+        Executor instance (MockExecutor or BinanceExecutor)
     """
-    logger.info(f"Creating executor in '{mode}' mode...")
+    execution_mode = config.execution_mode
+    logger.info(f"Creating executor in '{execution_mode}' mode...")
     
-    if mode == "live":
-        logger.warning(
-            "⚠️  Live mode not yet implemented! "
-            "Falling back to mock mode (paper trading)."
-        )
-        mode = "mock"
-    
-    # Create executor with repositories
     with db.session_scope() as session:
         trade_repo = TradeRepository(session)
         signal_repo = SignalRepository(session)
-        executor = MockExecutor(trade_repo, signal_repo)
+        
+        if execution_mode == "live":
+            # ⚠️  LIVE TRADING MODE - REAL MONEY! ⚠️
+            logger.warning("=" * 70)
+            logger.warning("⚠️  ⚠️  ⚠️  LIVE TRADING MODE ENABLED ⚠️  ⚠️  ⚠️")
+            logger.warning("⚠️  REAL MONEY AT RISK - USE WITH EXTREME CAUTION! ⚠️")
+            logger.warning("=" * 70)
+            
+            # Create CCXT exchange instance
+            try:
+                exchange_class = getattr(ccxt, config.exchange.name)
+                exchange = exchange_class({
+                    'apiKey': config.exchange.api_key.get_secret_value(),
+                    'secret': config.exchange.api_secret.get_secret_value(),
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'spot',  # spot trading
+                    }
+                })
+                
+                # Enable sandbox mode if configured
+                if config.exchange.sandbox_mode:
+                    logger.info("Sandbox mode enabled - using testnet")
+                    exchange.set_sandbox_mode(True)
+                else:
+                    logger.warning("⚠️  PRODUCTION MODE - REAL MONEY! ⚠️")
+                
+                executor = BinanceExecutor(exchange, trade_repo)
+                logger.info("✅ BinanceExecutor created (LIVE TRADING)")
+            
+            except Exception as e:
+                logger.error(f"Failed to create BinanceExecutor: {e}")
+                logger.error("Falling back to MockExecutor (paper trading)")
+                executor = MockExecutor(trade_repo, signal_repo)
+        
+        else:
+            # Paper trading mode (safe)
+            executor = MockExecutor(trade_repo, signal_repo)
+            logger.info("✅ MockExecutor created (paper trading)")
     
-    logger.info(f"Executor created: MockExecutor (paper trading)")
     return executor
 
 
@@ -180,7 +233,7 @@ def create_bot(
     config: BotConfig,
     data_handler: CryptoDataHandler,
     strategy: SmaCrossStrategy,
-    executor: MockExecutor,
+    executor: IExecutor,
 ) -> TradingBot:
     """
     Create the TradingBot with all dependencies.
@@ -244,8 +297,8 @@ def main():
         # 4. Create strategy
         strategy = create_strategy(config)
         
-        # 5. Create executor
-        executor = create_executor(args.mode, config)
+        # 5. Create executor (based on config.execution_mode)
+        executor = create_executor(config)
         
         # 6. Create bot
         bot = create_bot(config, data_handler, strategy, executor)

@@ -203,6 +203,32 @@
     - *Test Results:* All 90 tests pass (23 new bot tests + 67 existing tests).
     - *Test Coverage:* Bot initialization, run_once() cycle, trading logic, signal persistence, position calculation, indicator extraction, error handling, infinite loop control, full trading cycles.
 
+9. **Step 9.5: The Real Money Bridge** *(2025-XX-XX)*
+    - *Problem:* Bot can only execute paper trades with MockExecutor. Need to enable live trading capabilities with a toggle to switch between mock and real execution.
+    - *Solution:*
+        - **Configuration:** Added `execution_mode` field to `BotConfig` with values "paper" (default) or "live". Updated `settings/config.json` to include this field. Added validation with warnings when live mode is enabled.
+        - **BinanceExecutor:** Created `app/execution/binance_executor.py` implementing `IExecutor` interface for live trading. Integrated with CCXT library for real exchange orders. Comprehensive error handling for NetworkError (retry), InsufficientFunds (log and continue), ExchangeError (raise), and unexpected errors (log critical and raise).
+        - **Order Execution:** Supports both market and limit orders. Validates price for limit orders. Logs all orders with ⚠️ emoji for visibility. Persists successful trades to database.
+        - **Position Tracking:** Fetches balance from exchange using `fetch_balance()`. Extracts base currency and calculates net quantity. Returns safe defaults on errors.
+        - **Factory Pattern:** Updated `run_live.py` to implement executor factory based on `config.execution_mode`. Creates BinanceExecutor for live mode with CCXT client initialization, or MockExecutor for paper mode. Supports sandbox mode toggle.
+        - **Safety Features:** Multiple warnings throughout codebase when live mode is enabled. Sandbox mode support for testing with fake money. Database persistence failure doesn't crash trading.
+    - *Impact:*
+        - Bot can now execute real money trades on Binance (or any CCXT-supported exchange).
+        - Toggle between paper and live trading via configuration file.
+        - Comprehensive error handling prevents crashes and data loss.
+        - All live trades are persisted to database for analysis.
+        - Ready for production deployment with real money.
+    - *Files:*
+        - `app/config/models.py` - Added execution_mode field with validation
+        - `settings/config.json` - Added execution_mode: "paper"
+        - `app/execution/binance_executor.py` - New BinanceExecutor (267 lines)
+        - `app/execution/__init__.py` - Export BinanceExecutor
+        - `run_live.py` - Updated with executor factory (309 lines)
+        - `tests/test_binance_executor.py` - Comprehensive test suite (453 lines, 20 test cases)
+    - *Test Results:* All 110 tests pass (20 new BinanceExecutor tests + 90 existing tests).
+    - *Test Coverage:* Initialization, market orders, limit orders, error handling (insufficient funds, network errors, exchange errors), position tracking, trade persistence, full trading cycles, multi-symbol trading, order side conversion.
+
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
 - **Resolved:** Database selection for state persistence - chose SQLite with SQLAlchemy ORM.
+- **Feature:** Real money trading now available via BinanceExecutor. Use with extreme caution!

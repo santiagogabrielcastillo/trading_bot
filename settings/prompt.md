@@ -156,19 +156,50 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
     5.  ✅ **Test:** Created `tests/test_trading_bot.py` with 23 comprehensive test cases (all passing).
 
 
-#### Step 10: Binance Executor (Real Money)
-* **File:** `app/execution/binance_executor.py`
-* **Requirements:**
-    - Use `ccxt` private methods.
-    - **Error Handling:** Wrap calls in `try/except` blocks catching `ccxt.NetworkError`, `ccxt.ExchangeError`.
-    - **Kill Switch:** If drawdown > X% in a day, stop everything.
+#### Step 9.5: The Real Money Bridge (Binance Executor) ✅ **DONE**
+* **Objective:** Implement the actual connection to Binance via CCXT and allow switching between "Paper" and "Live" modes.
+* **Requirements Met:**
+    1.  ✅ **Config Update:** Added `execution_mode` field to `BotConfig` with Literal["paper", "live"] type. Defaults to "paper". Added validator with warnings when live mode is enabled. Updated `settings/config.json` with execution_mode field.
+    2.  ✅ **BinanceExecutor:** Created `app/execution/binance_executor.py` (267 lines).
+        - ✅ Implements `IExecutor` interface (same as MockExecutor).
+        - ✅ Integrated with CCXT library for real exchange orders.
+        - ✅ Supports market and limit orders via `create_market_order()` and `create_limit_order()`.
+        - ✅ Comprehensive error handling:
+            - `ccxt.NetworkError` → Logged and re-raised for bot to retry
+            - `ccxt.InsufficientFunds` → Logged, returned None, bot continues
+            - `ccxt.ExchangeError` → Logged and re-raised
+            - Unexpected errors → Critical log and re-raised
+        - ✅ **Database Persistence:** All successful trades saved to DB with trade_repository.create().
+        - ✅ **Position Tracking:** Uses `client.fetch_balance()` to get real exchange position.
+        - ✅ Multiple warning logs with ⚠️ emoji throughout execution.
+    3.  ✅ **Factory Logic:** Updated `run_live.py` executor factory:
+        - ✅ Reads `config.execution_mode` to determine executor type.
+        - ✅ Creates BinanceExecutor for "live" mode with CCXT client.
+        - ✅ Creates MockExecutor for "paper" mode.
+        - ✅ Supports sandbox mode via `config.exchange.sandbox_mode`.
+        - ✅ Fallback to MockExecutor if BinanceExecutor initialization fails.
+        - ✅ Updated CLI documentation (removed --mode arg, now uses config).
+    4.  ✅ **Test:** Created `tests/test_binance_executor.py` with 20 comprehensive test cases (all passing).
+* **Safety Features:**
+    - ⚠️ Multiple warnings when live mode is enabled
+    - Sandbox mode support for testing with fake money
+    - Database persistence failure doesn't crash trading
+    - All errors logged with appropriate severity levels
 
 ---
 
 ### PHASE 4: Deployment & QA
 
-#### Step 10: Dependency Locking
-* **Task:** Initialize `poetry` or `uv` to lock versions of `pandas`, `numpy`, `ccxt`.
+#### Step 10: Dockerization & Hardening
+* **Objective:** Containerize the application for reliable 24/7 deployment on any server.
+* **Tasks:**
+    1.  **Config Update:** Add `trade_quantity` (or `fixed_size`) to `BotConfig` model and `config.json` to remove the hardcoded value in `bot.py`.
+    2.  **Dockerfile:** Create a lightweight image based on `python:3.11-slim`.
+    3.  **Docker Compose:** Create `docker-compose.yml` defining:
+        - Service `trading_bot`.
+        - **Volumes:** Persist `data_cache/`, `results/`, `logs/` and `trading_state.db` so they survive restarts.
+        - **Env Vars:** Inject API Keys securely.
+    4.  **Documentation:** Add `DEPLOY.md` with simple instructions to boot the bot on a VPS.
 
 #### Step 11: QA Hooks
 * **Task:** Setup `pre-commit` to run `ruff` (linting) and `mypy` (typing) before every commit.

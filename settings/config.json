@@ -19,6 +19,7 @@
       "slow_window": 50
     }
   },
-  "db_path": "trading_state.db"
+  "db_path": "trading_state.db",
+  "execution_mode": "paper"
 }
 
