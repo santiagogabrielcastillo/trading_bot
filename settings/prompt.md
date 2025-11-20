@@ -98,16 +98,28 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
 
 ---
 
+#### Step 7: Persistence Layer (Database)
+* **Objective:** Implement a persistent storage engine to track trades, signals, and bot state (preventing amnesia on restarts).
+* **Tech Stack:** SQLAlchemy (ORM) + SQLite.
+* **Tasks:**
+    1.  **Setup:** Add `sqlalchemy` to dependencies. Create `app/core/database.py` (Engine & Session Factory).
+    2.  **Models:** Create `app/models/sql.py` defining tables:
+        - `Trade` (id, symbol, side, quantity, price, timestamp, strategy_id, pnl).
+        - `Signal` (id, symbol, timestamp, signal_value, raw_data_json).
+    3.  **Repositories:** Create `app/repositories/` implementing the Repository Pattern (abstraction over DB operations).
+        - `trade_repo.add(trade)`, `trade_repo.get_all()`.
+    4.  **Testing:** Unit tests for database operations using an in-memory SQLite instance (`:memory:`).
+
 ### PHASE 3: Live Execution
 
-#### Step 7: Mock Executor (Paper Trading)
+#### Step 8: Mock Executor (Paper Trading)
 * **File:** `app/execution/mock_executor.py`
 * **Requirements:**
     - Implement `IExecutor`.
     - Simulate latency (optional).
     - Keep track of "fake" wallet balance.
 
-#### Step 8: Binance Executor (Real Money)
+#### Step 9: Binance Executor (Real Money)
 * **File:** `app/execution/binance_executor.py`
 * **Requirements:**
     - Use `ccxt` private methods.
@@ -118,8 +130,8 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
 
 ### PHASE 4: Deployment & QA
 
-#### Step 9: Dependency Locking
+#### Step 10: Dependency Locking
 * **Task:** Initialize `poetry` or `uv` to lock versions of `pandas`, `numpy`, `ccxt`.
 
-#### Step 10: QA Hooks
+#### Step 11: QA Hooks
 * **Task:** Setup `pre-commit` to run `ruff` (linting) and `mypy` (typing) before every commit.

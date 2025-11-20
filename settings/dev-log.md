@@ -1,9 +1,9 @@
 # DevLog: Python Trading Bot (BTC)
 
 ## Project Status
-- **Current Phase:** 2 - Simulation Engine (Backtesting).
+- **Current Phase:** 3 - Execution & Production (Persistence Layer).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 6 completed - Advanced Backtest CLI).
+- **Health:** Green (Step 7 completed - Persistence Layer).
 
 ## Progress Log
 
@@ -15,16 +15,16 @@
 - [x] **Refactor (Critical):** Replaced iterative `check_signal` with vectorized `generate_signals` in `BaseStrategy`.
 - [x] **Strategy:** Implemented `SmaCrossStrategy` using pure `numpy` vectorization in `app/strategies/sma_cross.py`.
 
-### Phase 2: Simulation Engine (Current Focus)
+### Phase 2: Simulation Engine (Completed)
 - [x] Implement `Backtester` class (Vectorized PnL calculation).
 - [x] Create `run_backtest.py` entry script.
 - [x] **CRITICAL HOTFIXES:** Fixed Sharpe Ratio annualization, Data Pagination, and Look-Ahead Bias.
 - [x] **Step 5: Simulation Hardening:** Implemented offline data caching and unit testing suite.
 - [x] **Step 5.5: Time-Aware Data Refactor:** Fixed recency bias to allow backtesting specific historical periods.
 - [x] **Step 6: Advanced Backtest CLI:** Dynamic parameter overrides, automatic result persistence, and mission reports.
-- [ ] Validate Strategy Metrics (Sharpe, Drawdown).
 
-### Phase 3: Execution & Production
+### Phase 3: Execution & Production (Current Focus)
+- [x] **Step 7: Persistence Layer:** SQLAlchemy-based database infrastructure for trade and signal tracking.
 - [ ] Implement `MockExecutor` (Paper Trading).
 - [ ] Implement `BinanceExecutor` (Real Execution).
 - [ ] Create `main.py` CLI.
@@ -102,7 +102,40 @@
         - `.gitignore` - Added `results/`, `data_cache/`, and `*.db` to ignore list.
     - *Test Results:* All 26 tests pass (18 new CLI tests + 8 existing tests).
     - *User Experience:* Researchers can now test 50+ parameter combinations in minutes with full result tracking.
+- **2025-11-20 (Persistence Layer - Step 7):** Built the "Memory" of the bot with SQLAlchemy and SQLite for trade and signal tracking.
+    - *Problem:* Need robust database infrastructure to store historical trades, track PnL, and log strategy signals for analysis and debugging.
+    - *Solution:*
+        1. **Core Infrastructure:** Created singleton `Database` class in `app/core/database.py` with session management, context managers, and SQLite connection handling.
+        2. **Data Models:** Defined `Trade` and `Signal` models in `app/models/sql.py` with proper relationships, indexes, and JSON metadata support.
+        3. **Repository Pattern:** Implemented `BaseRepository` interface and specific repositories (`TradeRepository`, `SignalRepository`) for clean data access.
+        4. **Foreign Key Support:** Enabled SQLite foreign key constraints via SQLAlchemy event listeners.
+        5. **In-Memory Testing:** All tests use `sqlite:///:memory:` for fast, isolated testing without disk I/O.
+    - *Design Decisions:*
+        - Singleton pattern for Database ensures single connection pool across application
+        - Repository pattern decouples business logic from database queries
+        - UUID for Trade IDs (better for distributed systems)
+        - Auto-increment integer for Signal IDs (sequential, efficient for queries)
+        - JSON column for Signal metadata (flexible storage of indicator values)
+        - Renamed `metadata` to `signal_metadata` (metadata is reserved in SQLAlchemy)
+    - *Impact:*
+        - Bot can now persist all trades and signals to disk
+        - Historical PnL tracking across sessions
+        - Signal debugging: see exactly what indicators triggered each trade
+        - Foundation for live trading execution layer
+        - Modular: DB logic completely decoupled from Strategy logic
+    - *Files:*
+        - `pyproject.toml` - Added SQLAlchemy 2.0 dependency
+        - `app/core/database.py` - Database infrastructure (157 lines)
+        - `app/models/sql.py` - Trade and Signal models (93 lines)
+        - `app/models/__init__.py` - Model exports
+        - `app/repositories/base.py` - Generic repository interface (115 lines)
+        - `app/repositories/trade_repository.py` - Trade data access (106 lines)
+        - `app/repositories/signal_repository.py` - Signal data access (115 lines)
+        - `app/repositories/__init__.py` - Repository exports
+        - `tests/test_persistence.py` - Comprehensive test suite (386 lines, 20 test cases)
+    - *Test Results:* All 46 tests pass (20 new persistence tests + 26 existing tests).
+    - *Test Coverage:* CRUD operations, filtering by symbol, date ranges, PnL calculations, signal value filtering, transaction management, singleton pattern verification.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
-- **Pending:** Database selection for state persistence (SQLite vs Redis) is deferred until Phase 3.
+- **Resolved:** Database selection for state persistence - chose SQLite with SQLAlchemy ORM.
