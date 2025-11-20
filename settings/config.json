@@ -3,7 +3,7 @@
     "name": "binance",
     "api_key": "",
     "api_secret": "",
-    "sandbox_mode": true
+    "sandbox_mode": false
   },
   "risk": {
     "max_position_size_usd": 1000,
