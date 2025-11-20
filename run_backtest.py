@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any
@@ -13,8 +14,40 @@ from app.backtesting.engine import Backtester
 
 
 def load_config(config_path: Path) -> BotConfig:
+    """
+    Load configuration from JSON file and overlay environment variables.
+    
+    Environment variables take precedence over config.json values:
+    - BINANCE_API_KEY: Overrides exchange.api_key
+    - BINANCE_SECRET: Overrides exchange.api_secret
+    - BINANCE_SANDBOX: Overrides exchange.sandbox_mode
+    
+    This allows keeping config.json clean while injecting secrets from the environment.
+    
+    Args:
+        config_path: Path to the config.json file
+        
+    Returns:
+        BotConfig with environment variable overrides applied
+    """
     with config_path.open() as fp:
         data = json.load(fp)
+    
+    # Overlay environment variables if present
+    env_api_key = os.getenv("BINANCE_API_KEY")
+    env_secret = os.getenv("BINANCE_SECRET")
+    env_sandbox = os.getenv("BINANCE_SANDBOX")
+    
+    if env_api_key is not None:
+        data['exchange']['api_key'] = env_api_key
+    
+    if env_secret is not None:
+        data['exchange']['api_secret'] = env_secret
+    
+    if env_sandbox is not None:
+        # Convert string to boolean
+        data['exchange']['sandbox_mode'] = env_sandbox.lower() in ('true', '1', 'yes')
+    
     return BotConfig(**data)
 
 
@@ -23,13 +56,24 @@ def build_exchange(exchange_cfg: ExchangeConfig) -> ccxt.Exchange:
         exchange_class = getattr(ccxt, exchange_cfg.name)
     except AttributeError as exc:
         raise ValueError(f"Exchange '{exchange_cfg.name}' is not supported by ccxt.") from exc
-
-    exchange = exchange_class(
-        {
-            "apiKey": exchange_cfg.api_key.get_secret_value(),
-            "secret": exchange_cfg.api_secret.get_secret_value(),
+    
+    exchange_params = {
+        "enableRateLimit": True,
+        "options": {
+            "fetchCurrencies": False,
+            "defaultType": "spot"
         }
-    )
+    }
+
+    api_key = exchange_cfg.api_key.get_secret_value()
+    secret = exchange_cfg.api_secret.get_secret_value()
+
+    if api_key and len(api_key.strip()) > 0 and secret and len(secret.strip()) > 0:
+        exchange_params["apiKey"] = api_key
+        exchange_params["secret"] = secret
+
+    exchange = exchange_class(exchange_params)
+
     if exchange_cfg.sandbox_mode:
         exchange.set_sandbox_mode(True)
     return exchange

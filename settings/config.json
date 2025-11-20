@@ -1,8 +1,8 @@
 {
   "exchange": {
     "name": "binance",
-    "api_key": "demo-key",
-    "api_secret": "demo-secret",
+    "api_key": "",
+    "api_secret": "",
     "sandbox_mode": true
   },
   "risk": {

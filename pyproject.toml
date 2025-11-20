@@ -1,32 +1,27 @@
-[project]
+[tool.poetry]
 name = "trading-bot"
 version = "0.1.0"
 description = "Bot BTC Scalable"
-authors = [
-    {name = "Santiago"}
-]
+authors = ["Santiago <santiagogabrielcastillo@hotmail.com>"]
 readme = "README.md"
-requires-python = "^3.11"
-dependencies = [
-    "pandas (>=2.3.3,<3.0.0)",
-    "numpy (>=2.3.5,<3.0.0)",
-    "ccxt (>=4.5.20,<5.0.0)",
-    "pydantic (>=2.12.4,<3.0.0)",
-    "sqlalchemy (>=2.0.0,<3.0.0)"
-]
 
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^2.3.3"
+numpy = "^2.3.5"
+ccxt = "^4.5.20"
+pydantic = "^2.12.4"
+sqlalchemy = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.1"
+pytest-mock = "^3.15.1"
+ruff = "^0.14.5"
+mypy = "^1.18.2"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-[dependency-groups]
-dev = [
-    "pytest (>=9.0.1,<10.0.0)",
-    "pytest-mock (>=3.15.1,<4.0.0)",
-    "ruff (>=0.14.5,<0.15.0)",
-    "mypy (>=1.18.2,<2.0.0)"
-]
 
 [tool.pytest.ini_options]
 python_files = ["tests/test_*.py"]
