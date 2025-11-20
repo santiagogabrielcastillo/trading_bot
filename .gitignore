@@ -12,3 +12,10 @@ __pycache__/
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Backtest results and data cache
+results/
+data_cache/
+
+# Database files
+*.db

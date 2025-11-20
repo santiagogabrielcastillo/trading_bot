@@ -3,7 +3,7 @@
 ## Project Status
 - **Current Phase:** 2 - Simulation Engine (Backtesting).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 5.5 completed - Time-Aware Data Refactor).
+- **Health:** Green (Step 6 completed - Advanced Backtest CLI).
 
 ## Progress Log
 
@@ -21,6 +21,7 @@
 - [x] **CRITICAL HOTFIXES:** Fixed Sharpe Ratio annualization, Data Pagination, and Look-Ahead Bias.
 - [x] **Step 5: Simulation Hardening:** Implemented offline data caching and unit testing suite.
 - [x] **Step 5.5: Time-Aware Data Refactor:** Fixed recency bias to allow backtesting specific historical periods.
+- [x] **Step 6: Advanced Backtest CLI:** Dynamic parameter overrides, automatic result persistence, and mission reports.
 - [ ] Validate Strategy Metrics (Sharpe, Drawdown).
 
 ### Phase 3: Execution & Production
@@ -80,6 +81,27 @@
         - `tests/test_engine_logic.py` - Updated `MockDataHandler` to match new signature.
         - `tests/test_time_aware_data.py` - Created comprehensive integration tests (5 test cases) covering forward fetching, cache validation, backward compatibility, and integration with backtester.
     - *Test Results:* All 8 tests pass (3 existing + 5 new integration tests).
+- **2025-11-20 (Advanced Backtest CLI - Step 6):** Transformed `run_backtest.py` into a powerful strategy iteration tool.
+    - *Problem:* Testing different strategy parameters required manually editing `config.json`, making rapid iteration slow and error-prone. No systematic way to track which parameters produced which results.
+    - *Solution:*
+        1. **Dynamic Parameter Overrides:** Added `--params` CLI argument that accepts JSON strings or key=value pairs (e.g., `--params 'fast_window=20,slow_window=60'`).
+        2. **Smart Overlay Logic:** Implemented `overlay_params()` that merges CLI overrides onto the base config, preserving all other settings.
+        3. **Automatic Result Persistence:** Created `save_results()` that saves full backtest output to `results/backtest_{STRATEGY}_{TIMESTAMP}.json` including metrics, params, config, and equity curve.
+        4. **Mission Report Display:** Implemented `print_mission_report()` that shows beautiful console output with performance metrics, parameters used, and save location.
+        5. **Intelligent Type Conversion:** Parameter parser auto-detects integers, floats, and strings from key=value pairs.
+    - *Impact:*
+        - Strategy iteration is now instant: `python run_backtest.py --start 2024-01-01 --end 2024-06-01 --params 'fast_window=20,slow_window=60'`
+        - All results are automatically saved with timestamps for comparison
+        - No need to edit config files for parameter testing
+        - Easy to build optimization scripts that parse saved JSON results
+        - Backward compatible: CLI args are optional overrides
+    - *Files:*
+        - `run_backtest.py` - Added `parse_params()`, `overlay_params()`, `save_results()`, `print_mission_report()` functions. Enhanced `main()` and `parse_args()`.
+        - `tests/test_backtest_cli.py` - Created comprehensive test suite (18 test cases) covering JSON parsing, key=value parsing, parameter overlay, result saving, and integration tests.
+        - `BACKTEST_CLI_GUIDE.md` - Created comprehensive user guide with examples, workflows, tips, and troubleshooting.
+        - `.gitignore` - Added `results/`, `data_cache/`, and `*.db` to ignore list.
+    - *Test Results:* All 26 tests pass (18 new CLI tests + 8 existing tests).
+    - *User Experience:* Researchers can now test 50+ parameter combinations in minutes with full result tracking.
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.

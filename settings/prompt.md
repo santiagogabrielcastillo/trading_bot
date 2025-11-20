@@ -87,9 +87,14 @@ After you successfully complete ANY step or task defined below, you **MUST** aut
         - **Smart Caching:** Verify cache by DATE RANGE (`min_date <= start` and `max_date >= end`), not just by length.
     3.  **Update Engine:** Pass the calculation start date to the handler.
 
-#### Step 6: Backtest Runner Refinement
+#### Step 6: Advanced Backtest CLI (Iterability)
+* **Objective:** Allow rapid strategy iteration by overriding parameters via CLI without editing config files.
 * **File:** `run_backtest.py`
-* **Task:** Update the script to use the new "Offline Mode" by default to speed up iteration.
+* **Tasks:**
+    1.  **Dynamic Arguments:** Update `argparse` to accept strategy parameters dynamically (e.g., `--param fast_window=20`).
+    2.  **Config Override:** Logic to merge CLI parameters into the loaded `BotConfig` object before running the backtest.
+    3.  **Result Persistence:** Instead of just printing, SAVE the results (Metrics + Equity Curve) to a folder `results/backtest_{timestamp}.json`.
+    4.  **Reporting:** Print a clear comparison table in the console (Config used vs Result).
 
 ---
 
