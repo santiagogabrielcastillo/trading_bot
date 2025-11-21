@@ -256,3 +256,36 @@ Develop a new, more advanced strategy, `VolatilityAdjustedStrategy`, that is bui
 
 **Architectural Impact:**
 This strategy introduces the concept of **dynamic risk sizing** and **volatility filtering**, a necessary architectural pivot to create a robust trading system that goes beyond curve-fitting. This will require modification of the `TradingBot` and `BacktestingEngine` interfaces to accept and process the dynamic SL. (This second modification is reserved for the next prompt).
+
+
+---
+### Step 16: Multi-Dimensional Strategy Optimization (Expanded WFO)
+
+**Objective:** To combat systemic overfitting (Sharpe $0.114$ IS $\rightarrow -0.103$ OOS) by expanding the parameter search space to include **all** critical parameters of the `VolatilityAdjustedStrategy`. An optimization limited only to SMA windows generates biased and unstable results.
+
+**Mandatory Implementation:** Modify the `tools/optimize_strategy.py` script.
+
+1.  **Update CLI:** Add new command-line arguments (`--atr-window`, `--atr-multiplier`) to define the search ranges for these volatility parameters.
+2.  **Combination Generation:** Replace the current two-dimensional `itertools.product` with a four-dimensional Cartesian product including the ranges for: `fast_window`, `slow_window`, `atr_window`, and `atr_multiplier`.
+3.  **Parameter Injection:** Ensure all four parameters are correctly injected into the `StrategyConfig` prior to instantiating the `VolatilityAdjustedStrategy` within the `_run_single_backtest` function.
+4.  **Constraint:** Maintain and validate the `fast_window < slow_window` constraint.
+
+**Validation:** Execute the expanded Walk-Forward Optimization (WFO) to generate a robust multi-dimensional dataset necessary for the subsequent robustness analysis.
+
+---
+### Architecture Backlog (Pending)
+
+* **Refactor: Abstracted Exchange Connector**
+    * **Priority:** High (Operational Security)
+    * **Rationale:** Eliminate the critical Single Point of Failure (SPOF) risk associated with sole dependency on the Binance API/service availability. This framework must enable rapid migration to another exchange (e.g., Kraken, Bybit) or future multi-platform operation without modifying core trading logic (Bot, Strategy, Backtester), only the `IExecutor` initialization.
+---
+
+
+<!-- 
+python tools/optimize_strategy.py \
+  --start-date 2020-01-01 \
+  --end-date 2025-11-20 \
+  --fast 5,10,15,50 \
+  --slow 50,100,150,200 \
+  --atr-window 10,14,20 \
+  --atr-multiplier 1.5,2.0,2.5 -->

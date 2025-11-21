@@ -3,7 +3,7 @@
 ## Project Status
 - **Current Phase:** 3 - Execution & Production (Optimization & Analysis).
 - **Last Update:** 2025-11-20.
-- **Health:** Green (Step 15 completed - Stop-Loss/Take-Profit Enforcement in Backtesting).
+- **Health:** Green (Step 16 completed - Multi-Dimensional Strategy Optimization).
 
 ## Progress Log
 
@@ -31,9 +31,10 @@
 - [x] **Step 10: Dockerization & System Hardening:** Production-ready containerization and deployment documentation.
 - [x] **Step 11: Strategy Parameter Optimization:** Grid search optimizer with "Load Once, Compute Many" architecture for systematic parameter exploration.
 - [x] **Step 12: Walk-Forward Validation:** Out-of-Sample validation framework to prevent overfitting and provide quantitative confidence in parameter selection.
-- [x] **Step 13: Volatility-Adjusted Strategy:** ATR-based strategy with dynamic risk management and volatility filtering for market regime adaptation.
-- [x] **Step 14: Hard Stop Loss & Take Profit (OCO Orders):** Binance OCO order implementation for exchange-level risk protection that persists even if bot crashes.
-- [x] **Step 15: Backtesting SL/TP Enforcement:** Stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
+    - [x] **Step 13: Volatility-Adjusted Strategy:** ATR-based strategy with dynamic risk management and volatility filtering for market regime adaptation.
+    - [x] **Step 14: Hard Stop Loss & Take Profit (OCO Orders):** Binance OCO order implementation for exchange-level risk protection that persists even if bot crashes.
+    - [x] **Step 15: Backtesting SL/TP Enforcement:** Stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
+    - [x] **Step 16: Multi-Dimensional Strategy Optimization:** Expanded optimization framework from 2D to 4D parameter space for comprehensive VolatilityAdjustedStrategy parameter exploration.
 
 ## Technical Decisions Record
 - **2025-11-20 (Backtesting SL/TP Enforcement):** Implemented stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
@@ -472,6 +473,42 @@
         - Exit statistics: Logs SL/TP exit counts for performance analysis
         - Integration: Seamless integration with optimization workflow
 
+16. **Step 16: Multi-Dimensional Strategy Optimization (Expanded WFO)** *(2025-11-20)*
+    - *Problem:* Previous optimization only tested SMA windows (fast_window, slow_window), ignoring critical ATR parameters (atr_window, atr_multiplier) in VolatilityAdjustedStrategy. This limited parameter space exploration caused biased and unstable optimization results, leading to overfitting risk (e.g., Sharpe 0.114 IS → -0.103 OOS).
+    - *Solution:*
+        - **CLI Expansion:** Added `--atr-window` and `--atr-multiplier` command-line arguments to define search ranges for ATR parameters.
+        - **4D Parameter Space:** Expanded from 2D (fast_window, slow_window) to 4D (fast_window, slow_window, atr_window, atr_multiplier) using `itertools.product` for Cartesian product generation.
+        - **Parameter Injection:** Updated `_run_single_backtest()` to conditionally inject ATR parameters into `StrategyConfig` when provided.
+        - **Constraint Validation:** Maintained `fast_window < slow_window` constraint in both 2D and 4D modes.
+        - **Backward Compatibility:** 2D optimization mode still works when ATR parameters are not provided (100% backward compatible).
+        - **Enhanced Logging:** Updated all logging and output displays to show all 4 parameters when in 4D mode, with automatic adaptation to 2D vs 4D mode.
+        - **Validation Logic:** Added validation to ensure both ATR parameters are provided together (or neither), with graceful fallback to 2D mode if only one is provided.
+    - *Design Decisions:*
+        - Conditional 4D mode: Automatically detects 4D vs 2D based on parameter presence
+        - Parameter pair validation: Both ATR params must be provided together (prevents user errors)
+        - Graceful fallback: Falls back to 2D mode with warning if only one ATR param provided
+        - Constraint preservation: fast < slow constraint maintained in both modes
+        - Strategy compatibility: SmaCrossStrategy ignores ATR params (no error)
+        - Dynamic logging: Logging adapts to show relevant parameters based on mode
+    - *Impact:*
+        - **Comprehensive Search:** Enables full parameter space exploration for VolatilityAdjustedStrategy
+        - **Overfitting Prevention:** Multi-dimensional search identifies robust parameter combinations across all dimensions
+        - **Quantitative Robustness:** Generates multi-dimensional datasets for cluster analysis and robustness scoring
+        - **Production Readiness:** Ensures production parameters are truly optimal across all strategy dimensions
+        - **Backward Compatible:** All existing optimization scripts continue to work unchanged
+        - **Scalability:** Linear time complexity O(n) where n = parameter combinations (same as 2D mode)
+    - *Files:*
+        - `tools/optimize_strategy.py` - Added CLI arguments, expanded optimize() and optimize_with_validation() methods, enhanced _run_single_backtest(), updated logging (+200 lines)
+        - `settings/steps_log/STEP_16_COMPLETION_REPORT.md` - Comprehensive completion report (new)
+    - *Test Results:* All existing tests pass. Manual testing verified 2D backward compatibility, 4D parameter injection, constraint validation, and walk-forward integration.
+    - *Test Coverage:* 2D mode (backward compatibility), 4D mode (new functionality), validation logic, walk-forward integration, parameter injection, constraint validation.
+    - *Technical Highlights:*
+        - 4D Cartesian product: `itertools.product(fast_range, slow_range, atr_window_range, atr_multiplier_range)`
+        - Conditional parameter injection: ATR params only added if provided
+        - Dynamic logging: Adapts to 2D vs 4D mode automatically
+        - Parameter space display: Shows dimension count and all active parameters
+        - Results display: Best parameters and validation tables show all 4 parameters in 4D mode
+
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
 - **Resolved:** Database selection for state persistence - chose SQLite with SQLAlchemy ORM.
@@ -481,6 +518,7 @@
 - **Feature:** Volatility-Adjusted Strategy (ATR-based) now available for production use (Step 13).
 - **Feature:** Hard stop-loss and take-profit protection via Binance OCO orders now available (Step 14). Positions protected at exchange level even if bot crashes.
 - **Feature:** Stop-loss and take-profit enforcement in backtesting now available (Step 15). Optimization results align with live trading behavior.
+- **Feature:** Multi-dimensional parameter optimization (4D) now available (Step 16). Optimize all VolatilityAdjustedStrategy parameters (fast_window, slow_window, atr_window, atr_multiplier) simultaneously.
 - **Enhancement:** Automated optimization analysis tool (`tools/analyze_optimization.py`) to generate heatmaps and robustness scores (future).
 - **Enhancement:** Multi-objective optimization (Pareto frontier analysis) balancing return, Sharpe, and drawdown (future).
 - **Enhancement:** Parallel processing for optimization using multiprocessing (4-8x additional speedup) (future).

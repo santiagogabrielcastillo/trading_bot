@@ -271,6 +271,8 @@ class StrategyOptimizer:
         self,
         fast_window_range: List[int],
         slow_window_range: List[int],
+        atr_window_range: Optional[List[int]] = None,
+        atr_multiplier_range: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform grid search optimization over parameter combinations.
@@ -278,6 +280,8 @@ class StrategyOptimizer:
         Args:
             fast_window_range: List of fast SMA window values to test
             slow_window_range: List of slow SMA window values to test
+            atr_window_range: Optional list of ATR window values to test (for VolatilityAdjustedStrategy)
+            atr_multiplier_range: Optional list of ATR multiplier values to test (for VolatilityAdjustedStrategy)
         
         Returns:
             List of results sorted by Sharpe ratio (descending)
@@ -289,19 +293,44 @@ class StrategyOptimizer:
         print("STARTING GRID SEARCH OPTIMIZATION")
         print("=" * 70)
         
-        # Generate all parameter combinations
-        param_combinations = list(itertools.product(fast_window_range, slow_window_range))
+        # Determine if we're optimizing ATR parameters (4D) or just SMA (2D)
+        is_4d_optimization = atr_window_range is not None and atr_multiplier_range is not None
         
-        # Filter out invalid combinations (fast >= slow)
-        valid_combinations = [
-            (fast, slow) for fast, slow in param_combinations
-            if fast < slow
-        ]
+        if is_4d_optimization:
+            # 4D optimization: fast_window, slow_window, atr_window, atr_multiplier
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range
+            ))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m) for fast, slow, atr_w, atr_m in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (4D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+        else:
+            # 2D optimization: fast_window, slow_window (backward compatible)
+            param_combinations = list(itertools.product(fast_window_range, slow_window_range))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow) for fast, slow in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (2D):")
+            print(f"  Fast Window: {fast_window_range}")
+            print(f"  Slow Window: {slow_window_range}")
         
         total_tests = len(valid_combinations)
-        print(f"Parameter Space:")
-        print(f"  Fast Window: {fast_window_range}")
-        print(f"  Slow Window: {slow_window_range}")
         print(f"  Total Combinations: {len(param_combinations)}")
         print(f"  Valid Combinations: {total_tests} (fast < slow)")
         print()
@@ -314,15 +343,28 @@ class StrategyOptimizer:
         )
         
         # Run backtest for each valid combination
-        for idx, (fast_window, slow_window) in enumerate(valid_combinations, start=1):
+        for idx, params in enumerate(valid_combinations, start=1):
             try:
-                result = self._run_single_backtest(
-                    cached_handler=cached_handler,
-                    fast_window=fast_window,
-                    slow_window=slow_window,
-                    iteration=idx,
-                    total=total_tests,
-                )
+                if is_4d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        iteration=idx,
+                        total=total_tests,
+                    )
+                else:
+                    fast_window, slow_window = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        iteration=idx,
+                        total=total_tests,
+                    )
                 self.results.append(result)
                 
             except Exception as e:
@@ -343,6 +385,10 @@ class StrategyOptimizer:
             print(f"\nBest Parameters:")
             print(f"  Fast Window: {best['params']['fast_window']}")
             print(f"  Slow Window: {best['params']['slow_window']}")
+            if 'atr_window' in best['params']:
+                print(f"  ATR Window: {best['params']['atr_window']}")
+            if 'atr_multiplier' in best['params']:
+                print(f"  ATR Multiplier: {best['params']['atr_multiplier']}")
             print(f"  Sharpe Ratio: {best['metrics']['sharpe_ratio']:.4f}")
             print(f"  Total Return: {best['metrics']['total_return'] * 100:.2f}%")
             print(f"  Max Drawdown: {best['metrics']['max_drawdown'] * 100:.2f}%")
@@ -354,6 +400,8 @@ class StrategyOptimizer:
         fast_window_range: List[int],
         slow_window_range: List[int],
         top_n: int = 5,
+        atr_window_range: Optional[List[int]] = None,
+        atr_multiplier_range: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform grid search with In-Sample/Out-of-Sample validation.
@@ -366,6 +414,8 @@ class StrategyOptimizer:
             fast_window_range: List of fast SMA window values to test
             slow_window_range: List of slow SMA window values to test
             top_n: Number of top performers to validate (default: 5)
+            atr_window_range: Optional list of ATR window values to test (for VolatilityAdjustedStrategy)
+            atr_multiplier_range: Optional list of ATR multiplier values to test (for VolatilityAdjustedStrategy)
         
         Returns:
             List of top N results with both IS and OOS metrics
@@ -388,19 +438,44 @@ class StrategyOptimizer:
         print("PHASE 1: IN-SAMPLE GRID SEARCH")
         print("=" * 70)
         
-        # Generate all parameter combinations
-        param_combinations = list(itertools.product(fast_window_range, slow_window_range))
+        # Determine if we're optimizing ATR parameters (4D) or just SMA (2D)
+        is_4d_optimization = atr_window_range is not None and atr_multiplier_range is not None
         
-        # Filter out invalid combinations (fast >= slow)
-        valid_combinations = [
-            (fast, slow) for fast, slow in param_combinations
-            if fast < slow
-        ]
+        if is_4d_optimization:
+            # 4D optimization: fast_window, slow_window, atr_window, atr_multiplier
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range
+            ))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m) for fast, slow, atr_w, atr_m in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (4D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+        else:
+            # 2D optimization: fast_window, slow_window (backward compatible)
+            param_combinations = list(itertools.product(fast_window_range, slow_window_range))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow) for fast, slow in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (2D):")
+            print(f"  Fast Window: {fast_window_range}")
+            print(f"  Slow Window: {slow_window_range}")
         
         total_tests = len(valid_combinations)
-        print(f"Parameter Space:")
-        print(f"  Fast Window: {fast_window_range}")
-        print(f"  Slow Window: {slow_window_range}")
         print(f"  Total Combinations: {len(param_combinations)}")
         print(f"  Valid Combinations: {total_tests} (fast < slow)")
         print()
@@ -416,18 +491,34 @@ class StrategyOptimizer:
         is_results: List[Dict[str, Any]] = []
         
         # Run backtest for each valid combination on IN-SAMPLE period
-        for idx, (fast_window, slow_window) in enumerate(valid_combinations, start=1):
+        for idx, params in enumerate(valid_combinations, start=1):
             try:
-                result = self._run_single_backtest(
-                    cached_handler=cached_handler,
-                    fast_window=fast_window,
-                    slow_window=slow_window,
-                    iteration=idx,
-                    total=total_tests,
-                    start_date=self.start_date,
-                    end_date=self.split_date,
-                    phase="IS",
-                )
+                if is_4d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        iteration=idx,
+                        total=total_tests,
+                        start_date=self.start_date,
+                        end_date=self.split_date,
+                        phase="IS",
+                    )
+                else:
+                    fast_window, slow_window = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        iteration=idx,
+                        total=total_tests,
+                        start_date=self.start_date,
+                        end_date=self.split_date,
+                        phase="IS",
+                    )
                 is_results.append(result)
                 
             except Exception as e:
@@ -450,12 +541,20 @@ class StrategyOptimizer:
         # Select top N performers
         top_performers = is_results[:min(top_n, len(is_results))]
         
+        # Check if we have 4D parameters
+        is_4d = top_performers and 'atr_window' in top_performers[0]['params'] and 'atr_multiplier' in top_performers[0]['params']
+        
         print(f"\nTop {len(top_performers)} In-Sample Performers:")
         for rank, result in enumerate(top_performers, start=1):
             params = result['params']
             metrics = result['metrics']
-            print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d} "
-                  f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
+            if is_4d:
+                print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d}, "
+                      f"ATR_W={params['atr_window']:2d}, ATR_M={params['atr_multiplier']:.1f} "
+                      f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
+            else:
+                print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d} "
+                      f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
         
         # ========== PHASE 2: OUT-OF-SAMPLE VALIDATION ==========
         print()
@@ -474,16 +573,32 @@ class StrategyOptimizer:
             slow_window = params['slow_window']
             
             try:
-                oos_result = self._run_single_backtest(
-                    cached_handler=cached_handler,
-                    fast_window=fast_window,
-                    slow_window=slow_window,
-                    iteration=idx,
-                    total=len(top_performers),
-                    start_date=self.split_date,
-                    end_date=self.end_date,
-                    phase="OOS",
-                )
+                if is_4d:
+                    atr_window = params['atr_window']
+                    atr_multiplier = params['atr_multiplier']
+                    oos_result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        iteration=idx,
+                        total=len(top_performers),
+                        start_date=self.split_date,
+                        end_date=self.end_date,
+                        phase="OOS",
+                    )
+                else:
+                    oos_result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        iteration=idx,
+                        total=len(top_performers),
+                        start_date=self.split_date,
+                        end_date=self.end_date,
+                        phase="OOS",
+                    )
                 
                 # Combine IS and OOS metrics
                 validated_entry = {
@@ -504,16 +619,32 @@ class StrategyOptimizer:
         print(f"Successfully validated: {len(validated_results)}/{len(top_performers)}")
         
         if validated_results:
-            print(f"\nValidation Results (sorted by IS Sharpe):")
-            print(f"{'Rank':<6} {'Params':<15} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
-            print("-" * 70)
-            for rank, result in enumerate(validated_results, start=1):
-                params = result['params']
-                is_m = result['IS_metrics']
-                oos_m = result['OOS_metrics']
-                print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d}){'':<8} "
-                      f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
-                      f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
+            # Check if we have 4D parameters
+            first_params = validated_results[0]['params']
+            is_4d = 'atr_window' in first_params and 'atr_multiplier' in first_params
+            
+            if is_4d:
+                print(f"\nValidation Results (sorted by IS Sharpe):")
+                print(f"{'Rank':<6} {'Params':<25} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
+                print("-" * 85)
+                for rank, result in enumerate(validated_results, start=1):
+                    params = result['params']
+                    is_m = result['IS_metrics']
+                    oos_m = result['OOS_metrics']
+                    print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d},{params['atr_window']:2d},{params['atr_multiplier']:.1f}){'':<8} "
+                          f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
+                          f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
+            else:
+                print(f"\nValidation Results (sorted by IS Sharpe):")
+                print(f"{'Rank':<6} {'Params':<15} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
+                print("-" * 70)
+                for rank, result in enumerate(validated_results, start=1):
+                    params = result['params']
+                    is_m = result['IS_metrics']
+                    oos_m = result['OOS_metrics']
+                    print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d}){'':<8} "
+                          f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
+                          f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
         
         self.results = validated_results
         return validated_results
@@ -528,6 +659,8 @@ class StrategyOptimizer:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         phase: str = "",
+        atr_window: Optional[int] = None,
+        atr_multiplier: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Run a single backtest iteration with specific parameters.
@@ -541,6 +674,8 @@ class StrategyOptimizer:
             start_date: Optional override for backtest start date
             end_date: Optional override for backtest end date
             phase: Optional phase label (e.g., "IS", "OOS") for logging
+            atr_window: Optional ATR window period (for VolatilityAdjustedStrategy)
+            atr_multiplier: Optional ATR multiplier (for VolatilityAdjustedStrategy)
         
         Returns:
             Dictionary with params and metrics
@@ -552,15 +687,25 @@ class StrategyOptimizer:
         # Create strategy config with current parameters
         # Merge base config params with optimization params
         base_params = self.base_strategy_config.params.copy() if self.base_strategy_config else {}
+        
+        # Build params dict with optimization overrides
+        params_dict = {
+            **base_params,  # Include all params from config.json
+            "fast_window": fast_window,  # Override with optimization params
+            "slow_window": slow_window,
+        }
+        
+        # Add ATR parameters if provided (for 4D optimization)
+        if atr_window is not None:
+            params_dict["atr_window"] = atr_window
+        if atr_multiplier is not None:
+            params_dict["atr_multiplier"] = atr_multiplier
+        
         strategy_config = StrategyConfig(
             name=self.base_strategy_config.name if self.base_strategy_config else "sma_cross",
             symbol=self.symbol,
             timeframe=self.timeframe,
-            params={
-                **base_params,  # Include all params from config.json
-                "fast_window": fast_window,  # Override with optimization params
-                "slow_window": slow_window,
-            }
+            params=params_dict
         )
         
         # Instantiate strategy using factory function
@@ -602,14 +747,30 @@ class StrategyOptimizer:
         sharpe_str = f"{sharpe:.3f}" if not pd.isna(sharpe) else "N/A"
         
         phase_str = f"[{phase}] " if phase else ""
-        print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d} "
-              f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
+        
+        # Build params dict for return value
+        params_dict = {
+            'fast_window': fast_window,
+            'slow_window': slow_window,
+        }
+        
+        # Add ATR parameters if provided
+        if atr_window is not None:
+            params_dict['atr_window'] = atr_window
+        if atr_multiplier is not None:
+            params_dict['atr_multiplier'] = atr_multiplier
+        
+        # Build log message
+        if atr_window is not None and atr_multiplier is not None:
+            print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d}, "
+                  f"ATR_W={atr_window:2d}, ATR_M={atr_multiplier:.1f} "
+                  f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
+        else:
+            print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d} "
+                  f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
         
         return {
-            'params': {
-                'fast_window': fast_window,
-                'slow_window': slow_window,
-            },
+            'params': params_dict,
             'metrics': result_metrics,
         }
     
@@ -768,6 +929,20 @@ Examples:
     )
     
     parser.add_argument(
+        '--atr-window',
+        type=str,
+        default=None,
+        help='ATR window range as comma-separated values (for VolatilityAdjustedStrategy, e.g., 10,14,20)'
+    )
+    
+    parser.add_argument(
+        '--atr-multiplier',
+        type=str,
+        default=None,
+        help='ATR multiplier range as comma-separated values (for VolatilityAdjustedStrategy, e.g., 1.5,2.0,2.5)'
+    )
+    
+    parser.add_argument(
         '-o', '--output',
         type=str,
         help='Output file path (default: results/optimization_TIMESTAMP.json)'
@@ -820,6 +995,21 @@ Examples:
         fast_range = [int(x.strip()) for x in args.fast.split(',')]
         slow_range = [int(x.strip()) for x in args.slow.split(',')]
         
+        # Parse ATR parameters if provided
+        atr_window_range = None
+        atr_multiplier_range = None
+        if args.atr_window:
+            atr_window_range = [int(x.strip()) for x in args.atr_window.split(',')]
+        if args.atr_multiplier:
+            atr_multiplier_range = [float(x.strip()) for x in args.atr_multiplier.split(',')]
+        
+        # Validate: if one ATR param is provided, both should be provided
+        if (atr_window_range is None) != (atr_multiplier_range is None):
+            print("⚠ Warning: --atr-window and --atr-multiplier must both be provided for 4D optimization.")
+            print("  Falling back to 2D optimization (fast_window, slow_window only)")
+            atr_window_range = None
+            atr_multiplier_range = None
+        
         print("=" * 70)
         print("OPTIMIZATION PARAMETERS")
         print("=" * 70)
@@ -832,6 +1022,12 @@ Examples:
             print(f"  Split Date:  {args.split_date} (Walk-Forward Mode)")
         print(f"  Fast Range:  {fast_range}")
         print(f"  Slow Range:  {slow_range}")
+        if atr_window_range and atr_multiplier_range:
+            print(f"  ATR Window Range:  {atr_window_range}")
+            print(f"  ATR Multiplier Range:  {atr_multiplier_range}")
+            print(f"  → 4D Optimization Mode (Fast, Slow, ATR_W, ATR_M)")
+        else:
+            print(f"  → 2D Optimization Mode (Fast, Slow only)")
         print()
         
         if risk_config:
@@ -874,12 +1070,16 @@ Examples:
                 fast_window_range=fast_range,
                 slow_window_range=slow_range,
                 top_n=args.top_n,
+                atr_window_range=atr_window_range,
+                atr_multiplier_range=atr_multiplier_range,
             )
         else:
             # Standard optimization (no validation)
             results = optimizer.optimize(
                 fast_window_range=fast_range,
                 slow_window_range=slow_range,
+                atr_window_range=atr_window_range,
+                atr_multiplier_range=atr_multiplier_range,
             )
         
         # STEP 3: Save results
