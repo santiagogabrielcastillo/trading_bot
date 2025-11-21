@@ -2,8 +2,8 @@
 
 ## Project Status
 - **Current Phase:** 3 - Execution & Production (Optimization & Analysis).
-- **Last Update:** 2025-11-20.
-- **Health:** Green (Step 16 completed - Multi-Dimensional Strategy Optimization).
+- **Last Update:** 2025-11-21.
+- **Health:** Green (Step 17 completed - Multi-Objective Robustness Analyzer).
 
 ## Progress Log
 
@@ -35,6 +35,7 @@
     - [x] **Step 14: Hard Stop Loss & Take Profit (OCO Orders):** Binance OCO order implementation for exchange-level risk protection that persists even if bot crashes.
     - [x] **Step 15: Backtesting SL/TP Enforcement:** Stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
     - [x] **Step 16: Multi-Dimensional Strategy Optimization:** Expanded optimization framework from 2D to 4D parameter space for comprehensive VolatilityAdjustedStrategy parameter exploration.
+    - [x] **Step 17: Multi-Objective Robustness Analyzer:** Created dedicated tool to process Walk-Forward Optimization results and select robust parameters based on Out-of-Sample performance stability.
 
 ## Technical Decisions Record
 - **2025-11-20 (Backtesting SL/TP Enforcement):** Implemented stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
@@ -508,6 +509,30 @@
         - Dynamic logging: Adapts to 2D vs 4D mode automatically
         - Parameter space display: Shows dimension count and all active parameters
         - Results display: Best parameters and validation tables show all 4 parameters in 4D mode
+- **2025-11-21 (Multi-Objective Robustness Analyzer - Step 17):** Created dedicated tool to process Walk-Forward Optimization results and select robust parameters based on Out-of-Sample performance stability.
+    - *Reason:* Step 16 generated multi-dimensional optimization results, but manual analysis is time-consuming and error-prone. Need automated quantitative analysis to identify robust parameter configurations that generalize well to unseen data.
+    - *Solution:* 
+        - Created `tools/analyze_optimization.py` script that processes WFO JSON results
+        - Implements Robustness Factor (FR) calculation: `FR = Sharpe_OOS × (Sharpe_OOS / Sharpe_IS)`
+        - FR metric rewards high OOS Sharpe ratios while penalizing configurations with significant degradation from IS to OOS
+        - Handles edge cases: Rejects negative OOS Sharpe ratios (FR = 0), handles division by zero for near-zero IS Sharpe
+        - Sorts all configurations by FR (descending) and displays top N results in formatted table
+        - Generates final recommendation with JSON-formatted config for easy copy-paste into `config.json`
+    - *Impact:*
+        - **Automated Analysis:** Eliminates manual calculation and sorting of robustness metrics
+        - **Quantitative Selection:** Objective metric (FR) replaces subjective parameter selection
+        - **Production Confidence:** Only recommends configurations with positive OOS performance
+        - **Time Savings:** Instant analysis of optimization results vs hours of manual work
+        - **Reproducibility:** Same analysis logic applied consistently across all optimization runs
+    - *Files:*
+        - `tools/analyze_optimization.py` - Complete robustness analyzer with CLI interface, FR calculation, table formatting, and recommendation generation (new, 400+ lines)
+    - *Test Results:* Verified with real optimization results. Correctly filters negative OOS configurations, calculates FR accurately, displays top performers, and generates valid JSON config recommendations.
+    - *Technical Highlights:*
+        - Robustness Factor formula: `FR = Sharpe_OOS × (Sharpe_OOS / Sharpe_IS)`
+        - Edge case handling: Negative OOS → FR = 0, near-zero IS → FR = 0
+        - Parameter formatting: Supports both 2D (SMA Cross) and 4D (VolatilityAdjusted) parameter sets
+        - Table output: Formatted console table with rank, parameters, Sharpe ratios, degradation ratio, and FR
+        - JSON recommendation: Generates ready-to-use config.json snippet with all parameters
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
@@ -519,7 +544,8 @@
 - **Feature:** Hard stop-loss and take-profit protection via Binance OCO orders now available (Step 14). Positions protected at exchange level even if bot crashes.
 - **Feature:** Stop-loss and take-profit enforcement in backtesting now available (Step 15). Optimization results align with live trading behavior.
 - **Feature:** Multi-dimensional parameter optimization (4D) now available (Step 16). Optimize all VolatilityAdjustedStrategy parameters (fast_window, slow_window, atr_window, atr_multiplier) simultaneously.
-- **Enhancement:** Automated optimization analysis tool (`tools/analyze_optimization.py`) to generate heatmaps and robustness scores (future).
+- **Feature:** Multi-objective robustness analyzer (`tools/analyze_optimization.py`) now available (Step 17). Automatically processes WFO results and recommends robust parameters based on Out-of-Sample performance stability.
+- **Enhancement:** Heatmap visualization for parameter space exploration (future).
 - **Enhancement:** Multi-objective optimization (Pareto frontier analysis) balancing return, Sharpe, and drawdown (future).
 - **Enhancement:** Parallel processing for optimization using multiprocessing (4-8x additional speedup) (future).
 - **Enhancement:** Consider Kubernetes manifests for multi-server deployment (future).

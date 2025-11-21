@@ -273,6 +273,29 @@ This strategy introduces the concept of **dynamic risk sizing** and **volatility
 **Validation:** Execute the expanded Walk-Forward Optimization (WFO) to generate a robust multi-dimensional dataset necessary for the subsequent robustness analysis.
 
 ---
+### Step 17: Implementation of Multi-Objective Robustness Analyzer
+
+**Objective:** Formalize the quantitative analysis required by the previous step by creating a dedicated Python tool, `tools/analyze_optimization.py`, capable of processing the 4D Walk-Forward Validation (WFO) output and selecting the most robust parameters based on the stability of OOS performance.
+
+**Mandatory Implementation:** Create the script `tools/analyze_optimization.py`.
+
+1.  **CLI Interface:** Must accept a single argument: `--input-file` (the path to the WFO JSON results).
+2.  **Data Ingestion:** Load WFO results (which contain nested `IS_metrics` and `OOS_metrics`).
+3.  **Calculation Engine:** Implement a function to calculate the **Robustness Factor (FR)** for every configuration:
+    $$FR = \text{Sharpe}_{\text{OOS}} \times \left( \frac{\text{Sharpe}_{\text{OOS}}}{\text{Sharpe}_{\text{IS}}} \right)$$
+    *Note: Handle division by zero/near-zero $\text{Sharpe}_{\text{IS}}$ gracefully (e.g., set FR to zero or a minimum value for negative or near-zero $\text{Sharpe}_{\text{IS}}$).*
+4.  **Ranking and Filtering:** Sort all validated results by the calculated **Robustness Factor** (descending).
+5.  **Output & Visualization:** Display a clear, tabular summary of the Top 5 results, showing:
+    * Parameters
+    * $\text{Sharpe}_{\text{IS}}$
+    * $\text{Sharpe}_{\text{OOS}}$
+    * Degradation Ratio ($\text{Sharpe}_{\text{OOS}} / \text{Sharpe}_{\text{IS}}$)
+    * **Robustness Factor (FR)**
+6.  **Final Recommendation:** Display the configuration with the highest FR as the parameter set recommended for `config.json`.
+
+**Precondition:** Requires the successful completion and execution of Step 16 (4D WFO).
+
+---
 ### Architecture Backlog (Pending)
 
 * **Refactor: Abstracted Exchange Connector**
@@ -285,6 +308,7 @@ This strategy introduces the concept of **dynamic risk sizing** and **volatility
 python tools/optimize_strategy.py \
   --start-date 2020-01-01 \
   --end-date 2025-11-20 \
+  --split-date 2023-01-01 \
   --fast 5,10,15,50 \
   --slow 50,100,150,200 \
   --atr-window 10,14,20 \
