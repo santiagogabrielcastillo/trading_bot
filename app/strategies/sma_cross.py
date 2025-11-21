@@ -1,12 +1,17 @@
 import numpy as np
 import pandas as pd
-from app.core.interfaces import BaseStrategy
+from typing import Optional
+from app.core.interfaces import BaseStrategy, IMarketRegimeFilter
 
 class SmaCrossStrategy(BaseStrategy):
     """
     Estrategia de Cruce de Medias Móviles Simple (SMA Cross).
     Implementación Vectorizada.
     """
+    
+    def __init__(self, config, regime_filter: Optional[IMarketRegimeFilter] = None):
+        """Initialize SMA Cross Strategy with optional regime filter."""
+        super().__init__(config, regime_filter)
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """

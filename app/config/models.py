@@ -43,6 +43,17 @@ class VolatilityAdjustedStrategyConfig(BaseModel):
             raise ValueError("slow_window must be greater than fast_window")
         return v
 
+
+class RegimeFilterConfig(BaseModel):
+    """
+    Configuration for Market Regime Filter (ADX-based).
+    
+    This filter uses ADX (Average Directional Index) and DMI (Directional Movement Index)
+    to classify market conditions as trending or ranging, enabling context-aware signal generation.
+    """
+    adx_window: int = Field(14, gt=0, description="ADX calculation window period")
+    adx_threshold: int = Field(25, gt=0, description="ADX threshold for trend strength (typical: 20-25)")
+
 class BotConfig(BaseModel):
     """Configuración Global"""
     exchange: ExchangeConfig

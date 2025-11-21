@@ -3,7 +3,7 @@
 ## Project Status
 - **Current Phase:** 3 - Execution & Production (Optimization & Analysis).
 - **Last Update:** 2025-11-21.
-- **Health:** Green (Step 17 completed - Multi-Objective Robustness Analyzer).
+- **Health:** Green (Step 19 completed - ADX/DMI Filter Logic and Conditional Signal Implementation).
 
 ## Progress Log
 
@@ -36,6 +36,8 @@
     - [x] **Step 15: Backtesting SL/TP Enforcement:** Stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
     - [x] **Step 16: Multi-Dimensional Strategy Optimization:** Expanded optimization framework from 2D to 4D parameter space for comprehensive VolatilityAdjustedStrategy parameter exploration.
     - [x] **Step 17: Multi-Objective Robustness Analyzer:** Created dedicated tool to process Walk-Forward Optimization results and select robust parameters based on Out-of-Sample performance stability.
+    - [x] **Step 18: Market Regime Filter Module Design (Architecture):** Established architectural foundation for market regime filtering with injectable filter components, enabling context-aware signal generation.
+    - [x] **Step 19: ADX/DMI Filter Logic and Conditional Signal Implementation:** Implemented complete ADX/DMI-based market regime classification and integrated regime filtering into signal generation process.
 
 ## Technical Decisions Record
 - **2025-11-20 (Backtesting SL/TP Enforcement):** Implemented stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.
@@ -533,6 +535,68 @@
         - Parameter formatting: Supports both 2D (SMA Cross) and 4D (VolatilityAdjusted) parameter sets
         - Table output: Formatted console table with rank, parameters, Sharpe ratios, degradation ratio, and FR
         - JSON recommendation: Generates ready-to-use config.json snippet with all parameters
+- **2025-11-21 (Market Regime Filter Module Design - Step 18):** Established architectural foundation for market regime filtering to combat OOS degradation by enabling context-aware signal generation.
+    - *Reason:* Strategies were trading in all market conditions, including ranging markets where trend-following strategies underperform. Need architectural separation between market state classification and signal generation to filter out unfavorable market regimes.
+    - *Solution:*
+        - Created `IMarketRegimeFilter` abstract interface in `app/core/interfaces.py` with `get_regime(data)` method
+        - Defined `MarketState` enum in `app/core/enums.py` with TRENDING_UP, TRENDING_DOWN, RANGING states
+        - Created `RegimeFilterConfig` Pydantic model in `app/config/models.py` with `adx_window` and `adx_threshold` parameters
+        - Modified `BaseStrategy` and children to accept optional `regime_filter: Optional[IMarketRegimeFilter]` dependency
+        - Created `app/strategies/regime_filters.py` with `ADXVolatilityFilter` class skeleton (logic implemented in Step 19)
+    - *Impact:*
+        - **Architectural Separation:** Clean separation between market state and signal generation (loose coupling)
+        - **Backward Compatibility:** Filter is optional, existing code works unchanged
+        - **Testability:** Can inject mock filters for unit testing
+        - **Extensibility:** Easy to add new filter implementations (volatility-based, ML-based)
+        - **Configuration-Driven:** Filter parameters in config, optimizable via grid search
+    - *Files:*
+        - `app/core/interfaces.py` - Added `IMarketRegimeFilter` interface, modified `BaseStrategy.__init__()` (+30 lines)
+        - `app/core/enums.py` - Added `MarketState` enum (+4 lines)
+        - `app/config/models.py` - Added `RegimeFilterConfig` model (+8 lines)
+        - `app/strategies/regime_filters.py` - Created filter module with `ADXVolatilityFilter` skeleton (new, 100+ lines)
+        - `app/strategies/atr_strategy.py` - Updated to accept optional `regime_filter` (+5 lines)
+        - `app/strategies/sma_cross.py` - Updated to accept optional `regime_filter` (+5 lines)
+    - *Test Results:* Verified interface definition, enum values, config validation, strategy modification, backward compatibility. No linting errors.
+    - *Technical Highlights:*
+        - Dependency injection pattern: Filter injected into strategy constructor (not created internally)
+        - Optional parameter: Backward compatible, gradual adoption path
+        - Interface-driven design: Easy to swap implementations
+        - Configuration extraction: All parameters in config (no magic numbers)
+- **2025-11-21 (ADX/DMI Filter Logic and Conditional Signal Implementation - Step 19):** Implemented complete ADX/DMI-based market regime classification and integrated regime filtering into signal generation.
+    - *Reason:* Step 18 established the architecture, but filter logic was placeholder. Need full implementation of ADX/DMI calculation and regime classification, plus integration into strategy signal generation to filter entry signals based on market regime.
+    - *Solution:*
+        - Implemented `ADXVolatilityFilter._calculate_adx_dmi()` method with full ADX/DMI calculation:
+            - True Range (TR) calculation (vectorized)
+            - Directional Movement (+DM, -DM) calculation (vectorized)
+            - Wilder's smoothing for TR and DM (sequential, required by algorithm)
+            - Directional Indicators (+DI, -DI) calculation (vectorized)
+            - ADX calculation with Wilder's smoothing (sequential)
+        - Implemented `ADXVolatilityFilter.get_regime()` classification logic:
+            - TRENDING_UP: ADX > threshold AND +DI > -DI
+            - TRENDING_DOWN: ADX > threshold AND -DI > +DI
+            - RANGING: ADX <= threshold or equal DI values
+        - Modified `VolatilityAdjustedStrategy.generate_signals()` to:
+            - Get market regime classification from filter (if available)
+            - Filter BUY signals to TRENDING_UP regime only
+            - Filter SELL entry signals to TRENDING_DOWN regime only
+            - Preserve exit signals (SL/TP not filtered, handled by engine/bot)
+            - Graceful degradation: If filter fails, allows all signals
+    - *Impact:*
+        - **OOS Performance Improvement:** Strategies avoid trading in ranging markets, reducing whipsaws
+        - **Context-Aware Trading:** Strategy adapts to market regime, better alignment with trend-following edge
+        - **Risk Management Integrity:** Exit signals preserved, not filtered by regime (risk management priority)
+        - **Quantitative Classification:** Objective ADX/DMI-based classification (reproducible, testable, optimizable)
+        - **Backward Compatibility:** Filter is optional, existing code works unchanged
+    - *Files:*
+        - `app/strategies/regime_filters.py` - Implemented ADX/DMI calculation and regime classification (+150 lines)
+        - `app/strategies/atr_strategy.py` - Integrated regime filtering into signal generation (+40 lines)
+    - *Test Results:* Verified ADX/DMI calculation, regime classification, signal filtering, edge cases (division by zero, NaN values), backward compatibility. No linting errors.
+    - *Technical Highlights:*
+        - ADX/DMI calculation: Fully vectorized where possible (TR, DM, DI), sequential where necessary (Wilder's smoothing)
+        - Regime classification: Vectorized using `np.where()` for performance
+        - Signal filtering: Vectorized boolean Series operations
+        - Exit signal preservation: Exit logic handled by backtesting engine/trading bot, not filtered by strategy
+        - Edge case handling: Division by zero, NaN values, empty DataFrames all handled gracefully
 
 ## Known Issues / Backlog
 - **Pending:** Need to decide on a logging library (standard `logging` vs `loguru`). Standard `logging` is assumed for now.
@@ -545,6 +609,7 @@
 - **Feature:** Stop-loss and take-profit enforcement in backtesting now available (Step 15). Optimization results align with live trading behavior.
 - **Feature:** Multi-dimensional parameter optimization (4D) now available (Step 16). Optimize all VolatilityAdjustedStrategy parameters (fast_window, slow_window, atr_window, atr_multiplier) simultaneously.
 - **Feature:** Multi-objective robustness analyzer (`tools/analyze_optimization.py`) now available (Step 17). Automatically processes WFO results and recommends robust parameters based on Out-of-Sample performance stability.
+- **Feature:** Market regime filtering now available (Steps 18-19). ADX/DMI-based market regime classification enables context-aware signal generation, filtering entry signals to favorable market conditions (TRENDING_UP for longs, TRENDING_DOWN for shorts) while preserving exit signals for risk management.
 - **Enhancement:** Heatmap visualization for parameter space exploration (future).
 - **Enhancement:** Multi-objective optimization (Pareto frontier analysis) balancing return, Sharpe, and drawdown (future).
 - **Enhancement:** Parallel processing for optimization using multiprocessing (4-8x additional speedup) (future).

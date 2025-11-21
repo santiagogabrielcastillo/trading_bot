@@ -46,12 +46,46 @@ class IExecutor(ABC):
     def execute_order(self, symbol: str, side: OrderSide, quantity: float, order_type: OrderType) -> dict:
         pass
 
+# --- Interfaz de Filtro de Régimen de Mercado ---
+
+
+class IMarketRegimeFilter(ABC):
+    """
+    Abstract interface for market regime filters.
+    
+    Market regime filters classify market conditions (trending up, trending down, ranging)
+    to enable context-aware signal generation. Strategies can use this to filter out
+    signals during unfavorable market conditions.
+    """
+    
+    @abstractmethod
+    def get_regime(self, data: pd.DataFrame) -> pd.Series:
+        """
+        Classify market regime for each row in the DataFrame.
+        
+        Args:
+            data: DataFrame with OHLCV data and technical indicators
+            
+        Returns:
+            Series of MarketState enum values (TRENDING_UP, TRENDING_DOWN, RANGING)
+            with same index as input DataFrame
+        """
+        pass
+
 # --- Interfaz de Estrategia ---
 
 
 class BaseStrategy(ABC):
-    def __init__(self, config: StrategyConfig):
+    def __init__(self, config: StrategyConfig, regime_filter: Optional['IMarketRegimeFilter'] = None):
+        """
+        Initialize base strategy.
+        
+        Args:
+            config: Strategy configuration
+            regime_filter: Optional market regime filter for context-aware signal generation
+        """
         self.config = config
+        self.regime_filter = regime_filter
 
     @abstractmethod
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

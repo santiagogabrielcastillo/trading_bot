@@ -15,8 +15,10 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from app.core.interfaces import BaseStrategy
+from app.core.interfaces import BaseStrategy, IMarketRegimeFilter
+from app.core.enums import MarketState
 from app.config.models import StrategyConfig
+from typing import Optional
 
 
 class VolatilityAdjustedStrategy(BaseStrategy):
@@ -38,7 +40,7 @@ class VolatilityAdjustedStrategy(BaseStrategy):
     - Follows the same interface as SmaCrossStrategy
     """
     
-    def __init__(self, config: StrategyConfig):
+    def __init__(self, config: StrategyConfig, regime_filter: Optional[IMarketRegimeFilter] = None):
         """
         Initialize the Volatility-Adjusted Strategy.
         
@@ -49,8 +51,9 @@ class VolatilityAdjustedStrategy(BaseStrategy):
                 - atr_window: ATR calculation period (default: 14)
                 - atr_multiplier: Stop-loss distance multiplier (default: 2.0)
                 - volatility_lookback: Period for volatility check (default: 5)
+            regime_filter: Optional market regime filter for context-aware signal generation
         """
-        super().__init__(config)
+        super().__init__(config, regime_filter)
         
         # Extract parameters with safe defaults
         self.fast_window = config.params.get('fast_window', 10)
@@ -106,19 +109,22 @@ class VolatilityAdjustedStrategy(BaseStrategy):
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate trading signals with volatility filtering.
+        Generate trading signals with volatility filtering and market regime awareness.
         
         Signal Logic:
         1. Golden Cross (BUY):
            - Fast SMA crosses above Slow SMA (same as basic strategy)
            - AND price has moved significantly (volatility filter)
+           - AND market regime is TRENDING_UP (if regime filter is enabled)
            - Volatility Check: price_change_over_N_bars > 1.0 * current_ATR
         
         2. Death Cross (SELL):
-           - Fast SMA crosses below Slow SMA (no volatility filter on exits)
+           - Fast SMA crosses below Slow SMA
+           - AND market regime is TRENDING_DOWN (if regime filter is enabled)
+           - Note: Exit signals (SL/TP) are NOT filtered by regime (handled by engine/bot)
         
         3. HOLD (NEUTRAL):
-           - No cross or cross fails volatility filter
+           - No cross or cross fails volatility/regime filter
         
         Args:
             df: DataFrame with indicators already calculated
@@ -157,15 +163,42 @@ class VolatilityAdjustedStrategy(BaseStrategy):
         # Volatility condition: price movement exceeds threshold
         has_volatility = price_change.abs() >= volatility_threshold
         
-        # --- Step 3: Combine conditions ---
+        # --- Step 3: Apply Market Regime Filter (if available) ---
         
-        # BUY: Golden Cross AND sufficient volatility
+        # Get market regime classification if filter is available
+        regime_filter_active = True
+        if self.regime_filter is not None:
+            try:
+                regime_series = self.regime_filter.get_regime(df)
+                # Filter BUY signals: only allow in TRENDING_UP regime
+                buy_regime_ok = (regime_series == MarketState.TRENDING_UP)
+                # Filter SELL entry signals: only allow in TRENDING_DOWN regime
+                sell_regime_ok = (regime_series == MarketState.TRENDING_DOWN)
+            except Exception:
+                # If regime filter fails, disable it and log warning
+                regime_filter_active = False
+                buy_regime_ok = pd.Series(True, index=df.index)
+                sell_regime_ok = pd.Series(True, index=df.index)
+        else:
+            # No regime filter: allow all signals
+            buy_regime_ok = pd.Series(True, index=df.index)
+            sell_regime_ok = pd.Series(True, index=df.index)
+        
+        # --- Step 4: Combine conditions ---
+        
+        # BUY: Golden Cross AND sufficient volatility AND favorable regime (if filter active)
         buy_condition = golden_cross & has_volatility
+        if regime_filter_active and self.regime_filter is not None:
+            buy_condition = buy_condition & buy_regime_ok
         
-        # SELL: Death Cross (no volatility filter on exits for safety)
+        # SELL: Death Cross AND favorable regime (if filter active)
+        # Note: Exit signals (SL/TP) are handled by backtesting engine/trading bot,
+        # not filtered here. This only filters entry SELL signals.
         sell_condition = death_cross
+        if regime_filter_active and self.regime_filter is not None:
+            sell_condition = sell_condition & sell_regime_ok
         
-        # --- Step 4: Assign signals (vectorized) ---
+        # --- Step 5: Assign signals (vectorized) ---
         
         df['signal'] = np.where(
             buy_condition,

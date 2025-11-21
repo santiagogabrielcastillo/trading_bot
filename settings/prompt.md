@@ -295,6 +295,54 @@ This strategy introduces the concept of **dynamic risk sizing** and **volatility
 
 **Precondition:** Requires the successful completion and execution of Step 16 (4D WFO).
 
+### Step 18: Market Regime Filter Module Design (Architecture)
+
+**Objective:** Implement a core architectural separation between **Market State** and **Trading Signal** to combat severe Out-of-Sample (OOS) degradation. The strategy must be context-aware, filtering out operations during market regimes that destroy its edge (e.g., ranging/lateral markets).
+
+**Goal:** Create the necessary interfaces, configurations, and dependencies for the Market Regime Filter, making it an injectable component.
+
+**Mandatory Implementation (New Architectural Components):**
+
+1.  **Interface Definition (Decoupling):**
+    * **File:** `app/core/interfaces.py`
+    * **Action:** Define a new abstract interface, `IMarketRegimeFilter`, with a single core method: `get_regime(data: pd.DataFrame) -> pd.Series`.
+
+2.  **Market State Enumeration:**
+    * **File:** `app/core/enums.py`
+    * **Action:** Define a new `Enum` named `MarketState` with at least three distinct states: `TRENDING_UP`, `TRENDING_DOWN`, and `RANGING`.
+
+3.  **Filter Configuration Model:**
+    * **File:** `app/config/models.py`
+    * **Action:** Define a Pydantic model, `RegimeFilterConfig`, to hold the specific parameters for the initial filter implementation (ADX-based). Must include `adx_window: int` and `adx_threshold: int` to enable future optimization.
+
+4.  **Strategy Modification (Dependency Injection):**
+    * **File:** Modify the constructors of `BaseStrategy` and its children (e.g., `VolatilityAdjustedStrategy`) to accept an instance of `IMarketRegimeFilter` as a mandatory dependency.
+    * **Goal:** The strategy must now explicitly hold a reference to the filter.
+
+5.  **New Filter Module:**
+    * **File:** Create a new Python file: `app/strategies/regime_filters.py`.
+    * **Action:** Define the concrete implementation class, `ADXVolatilityFilter`, which inherits from `IMarketRegimeFilter` and accepts `RegimeFilterConfig` in its constructor. (The actual calculation logic will be implemented in Step 19).
+
+**Preconditions:** Requires structural changes to the core architecture to support injection.
+
+---
+### Step 19: ADX/DMI Filter Logic and Conditional Signal Implementation
+
+**Objective:** Implement the core quantitative logic of the Market Regime Filter and integrate its output into the trading signal generation process.
+
+**Mandatory Implementation:**
+
+1.  **Filter Logic Implementation:**
+    * **File:** `app/strategies/regime_filters.py`.
+    * **Action:** Implement `ADXVolatilityFilter.get_regime(data)` using the ADX and DMI technical indicators to classify each candlestick into one of the `MarketState` enums (`TRENDING_UP`, `TRENDING_DOWN`, or `RANGING`).
+
+2.  **Conditional Signal Generation:**
+    * **File:** `app/strategies/atr_strategy.py` (or `BaseStrategy.py`).
+    * **Action:** Modify `generate_signals` to:
+        * a) Call the injected `IMarketRegimeFilter` to get the `MARKET_STATE` series.
+        * b) Conditionally filter the `RAW_SIGNAL`: **A BUY signal is only valid if `MARKET_STATE` is `TRENDING_UP`. A SELL signal (for entry) is only valid if `MARKET_STATE` is `TRENDING_DOWN`.**
+        * c) **Crucially:** Ensure exit signals (Stop Loss/Take Profit) are **not** filtered by the regime, as risk management must always execute.
+
 ---
 ### Architecture Backlog (Pending)
 
