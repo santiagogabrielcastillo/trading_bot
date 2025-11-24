@@ -311,7 +311,7 @@ poetry run pytest -v
 
 **Note on Signal Repository:**
 - Current `Signal` model has `signal_metadata` JSON field
-- Stop-loss price can be stored: `{"sma_fast": X, "sma_slow": Y, "stop_loss_price": Z}`
+- Stop-loss price can be stored: `{"ema_fast": X, "ema_slow": Y, "stop_loss_price": Z}`
 - **Future Enhancement:** `TradingBot` should be updated to extract and use stop_loss_price
 
 ---

@@ -329,11 +329,16 @@ class TradingBot:
         """
         indicators = {}
         
-        # Extract SMA values if they exist
-        if 'sma_fast' in df.columns:
-            indicators['sma_fast'] = float(df['sma_fast'].iloc[-1])
-        if 'sma_slow' in df.columns:
-            indicators['sma_slow'] = float(df['sma_slow'].iloc[-1])
+        # Extract EMA values (fallback to SMA if legacy data)
+        if 'ema_fast' in df.columns:
+            indicators['ema_fast'] = float(df['ema_fast'].iloc[-1])
+        elif 'sma_fast' in df.columns:
+            indicators['ema_fast'] = float(df['sma_fast'].iloc[-1])
+        
+        if 'ema_slow' in df.columns:
+            indicators['ema_slow'] = float(df['ema_slow'].iloc[-1])
+        elif 'sma_slow' in df.columns:
+            indicators['ema_slow'] = float(df['sma_slow'].iloc[-1])
         
         # Extract price
         if 'close' in df.columns:

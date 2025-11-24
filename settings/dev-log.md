@@ -3,7 +3,7 @@
 ## Project Status
 - **Current Phase:** 3 - Execution & Production (Optimization & Analysis).
 - **Last Update:** 2025-11-24.
-- **Health:** Green (Step 24 completed - ADX/DMI forensic fixes).
+- **Health:** Green (Step 26 completed - EMA/6D configuration refinements).
 
 ## Progress Log
 
@@ -43,6 +43,10 @@
     - [x] **Step 22: Indicator Warm-up Synchronization (Data Integrity):** Fixed methodological flaw causing "Sharpe: N/A, Return: 0.00%" in WFO results by implementing declarative lookback period mechanism. Backtesting engine now automatically skips warm-up period required by all indicators (strategy + filter), ensuring signals are only generated when all indicators are fully calculated.
     - [x] **Step 23: Forensic Debugging of Market Regime Filter:** Created self-contained diagnostic tool to isolate and diagnose critical logic failures in ADXVolatilityFilter causing zero trades in 6D WFO. Tool loads data from known strong trend period, calculates ADX/DMI indicators, classifies regime, and provides detailed diagnostic output with failure detection warnings.
     - [x] **Step 24: Forensic Fix for ADX/DMI Calculation and Regime State:** Refactored ADX/DMI computation to use Wilder smoothing via vectorized EWM (no manual loops), normalized DX/ADX outputs to a strict 0-100 range, and corrected regime labeling to store full `MarketState` enum values. Re-ran `tools/diagnose_adx_filter.py` to confirm realistic ADX maxima (~74) and diversified regime distribution (48% ranging, 52% trending).
+    - [x] **Step 25: Core Indicator Refactoring (SMA → EMA):** Replaced all SMA calculations in `SmaCrossStrategy` and `VolatilityAdjustedStrategy` with EMA equivalents, updated metadata extraction, refreshed tests, and ensured downstream components consume the new `ema_fast/ema_slow` columns without regressions.
+    - [x] **Step 26: 6D WFO Configuration Refinement:** Updated `tools/optimize_strategy.py` defaults to the new aggressive EMA ranges (fast: [8,12,15,21], slow: [35,50,80,100], ADX threshold: [20,25,30,35]) and enabled out-of-the-box 6D sweeps by default (ATR windows, multipliers, ADX windows preset), documenting the new parameter focus.
+- [x] **Step 27: Momentum Confirmation Filter (MACD-Based) Design:** Added the `IMomentumFilter` contract, `MomentumFilterConfig`, and MACD filter skeleton (`MACDConfirmationFilter`). Strategies now accept dual filters (regime + momentum) and propagate lookback requirements end-to-end via `BaseStrategy`.
+- [x] **Step 28: MACD Confirmation Logic & 7D WFO:** Implemented MACD histogram gating, wired the filter into `VolatilityAdjustedStrategy`, and expanded the optimizer/analyzer stack to sweep a 7th dimension (`--macd-fast`) with refreshed default ranges (fast 9/12/15/21, slow 45/50/55/65, ADX 25/30/35). CLI/logging/docs updated so `optimize_strategy.py` now performs 7D WFO out of the box.
 
 ## Technical Decisions Record
 - **2025-11-20 (Backtesting SL/TP Enforcement):** Implemented stop-loss and take-profit enforcement in backtesting engine to align optimization results with live trading behavior.

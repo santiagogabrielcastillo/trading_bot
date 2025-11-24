@@ -1,29 +1,61 @@
 import numpy as np
 import pandas as pd
 from typing import Optional
-from app.core.interfaces import BaseStrategy, IMarketRegimeFilter
+from app.core.interfaces import BaseStrategy, IMarketRegimeFilter, IMomentumFilter
 
 class SmaCrossStrategy(BaseStrategy):
     """
-    Estrategia de Cruce de Medias Móviles Simple (SMA Cross).
-    Implementación Vectorizada.
+    Estrategia de Cruce de Medias Exponenciales (EMA Cross) vectorizada.
+    Conservamos el nombre histórico para compatibilidad, pero ahora priorizamos
+    datos recientes usando EMAs en lugar de SMAs.
     """
     
-    def __init__(self, config, regime_filter: Optional[IMarketRegimeFilter] = None):
-        """Initialize SMA Cross Strategy with optional regime filter."""
-        super().__init__(config, regime_filter)
+    def __init__(
+        self,
+        config,
+        regime_filter: Optional[IMarketRegimeFilter] = None,
+        momentum_filter: Optional[IMomentumFilter] = None,
+    ):
+        """Initialize SMA Cross Strategy with optional filters."""
+        super().__init__(config, regime_filter, momentum_filter)
+
+    @property
+    def max_lookback_period(self) -> int:
+        """
+        Return the maximum lookback period required by all strategy indicators.
+        
+        For EMA Cross strategy, this is the maximum of:
+        - fast_window
+        - slow_window
+        - filter's max_lookback_period (if filter is present)
+        
+        Returns:
+            Number of periods needed for indicator warm-up
+        """
+        # Get strategy-specific lookback (max of fast and slow windows)
+        fast_window = self.config.params.get('fast_window', 10)
+        slow_window = self.config.params.get('slow_window', 50)
+        strategy_lookback = max(fast_window, slow_window)
+        
+        lookbacks = [strategy_lookback]
+        if self.regime_filter is not None:
+            lookbacks.append(self.regime_filter.max_lookback_period)
+        if self.momentum_filter is not None:
+            lookbacks.append(self.momentum_filter.max_lookback_period)
+        
+        return max(lookbacks)
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calcula las SMAs rápida y lenta basándose en parámetros de configuración.
+        Calcula las EMAs rápida y lenta basándose en parámetros de configuración.
         """
         # 1. Extraer parámetros con valores por defecto seguros
         fast_window = self.config.params.get('fast_window', 10)
         slow_window = self.config.params.get('slow_window', 50)
 
-        # 2. Cálculo vectorizado usando rolling (Pandas optimizado en C)
-        df['sma_fast'] = df['close'].rolling(window=fast_window).mean()
-        df['sma_slow'] = df['close'].rolling(window=slow_window).mean()
+        # 2. Cálculo vectorizado usando exponenciales (prioriza datos recientes)
+        df['ema_fast'] = df['close'].ewm(span=fast_window, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=slow_window, adjust=False).mean()
 
         return df
 
@@ -38,10 +70,10 @@ class SmaCrossStrategy(BaseStrategy):
         
         # Capturamos el estado anterior (t-1) y el actual (t)
         # shift(1) desplaza los datos una fila hacia abajo para alinear t-1 con t
-        prev_fast = df['sma_fast'].shift(1)
-        prev_slow = df['sma_slow'].shift(1)
-        curr_fast = df['sma_fast']
-        curr_slow = df['sma_slow']
+        prev_fast = df['ema_fast'].shift(1)
+        prev_slow = df['ema_slow'].shift(1)
+        curr_fast = df['ema_fast']
+        curr_slow = df['ema_slow']
 
         # Definimos las máscaras booleanas para los cruces
         

@@ -38,16 +38,30 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.data.handler import CryptoDataHandler
 from app.core.interfaces import IDataHandler, BaseStrategy
+from app.core.strategy_factory import create_strategy
 from app.backtesting.engine import Backtester
 from app.strategies.sma_cross import SmaCrossStrategy
 from app.strategies.atr_strategy import VolatilityAdjustedStrategy
-from app.config.models import StrategyConfig, BotConfig, RiskConfig
+from app.strategies.regime_filters import ADXVolatilityFilter
+from app.strategies.momentum_filters import MACDConfirmationFilter
+from app.config.models import (
+    StrategyConfig,
+    BotConfig,
+    RiskConfig,
+    RegimeFilterConfig,
+    MomentumFilterConfig,
+)
 from app.execution.mock_executor import MockExecutor
 
 
 def load_strategy_from_config(config_path: str = "settings/config.json") -> Tuple[BaseStrategy, StrategyConfig]:
     """
-    Load strategy from config.json file.
+    Load strategy from config.json file using the centralized strategy factory.
+    
+    This function uses the strategy factory which handles:
+    - Dynamic strategy class resolution
+    - Optional market regime filter instantiation from config
+    - Consistent behavior with run_backtest.py and run_live.py
     
     Args:
         config_path: Path to config.json file
@@ -66,24 +80,8 @@ def load_strategy_from_config(config_path: str = "settings/config.json") -> Tupl
     bot_config = BotConfig(**config_dict)
     strategy_config = bot_config.strategy
     
-    # Strategy name mapping
-    strategy_map = {
-        "sma_cross": SmaCrossStrategy,
-        "SmaCrossStrategy": SmaCrossStrategy,
-        "VolatilityAdjustedStrategy": VolatilityAdjustedStrategy,
-    }
-    
-    strategy_name = strategy_config.name
-    strategy_class = strategy_map.get(strategy_name)
-    
-    if strategy_class is None:
-        raise ValueError(
-            f"Unknown strategy: {strategy_name}. "
-            f"Available strategies: {list(strategy_map.keys())}"
-        )
-    
-    # Instantiate strategy
-    strategy = strategy_class(config=strategy_config)
+    # Use centralized strategy factory (handles filter instantiation from config)
+    strategy = create_strategy(bot_config)
     
     return strategy, strategy_config
 
@@ -168,6 +166,7 @@ class StrategyOptimizer:
         initial_capital: float = 1.0,
         base_strategy_config: Optional[StrategyConfig] = None,
         risk_config: Optional[RiskConfig] = None,
+        momentum_filter_config: Optional[MomentumFilterConfig] = None,
     ):
         """
         Initialize the optimizer.
@@ -181,6 +180,8 @@ class StrategyOptimizer:
                        If provided, enables In-Sample/Out-of-Sample validation
             initial_capital: Initial capital for backtests (normalized to 1.0)
             base_strategy_config: Base strategy config from config.json
+            risk_config: Optional risk configuration (SL/TP enforcement)
+            momentum_filter_config: Optional MACD momentum filter baseline config
         """
         self.symbol = symbol
         self.timeframe = timeframe
@@ -190,6 +191,7 @@ class StrategyOptimizer:
         self.initial_capital = initial_capital
         self.base_strategy_config = base_strategy_config
         self.risk_config = risk_config
+        self.base_momentum_filter_config = momentum_filter_config
         
         # Validate split_date if provided
         if self.split_date:
@@ -240,7 +242,7 @@ class StrategyOptimizer:
             start_ts = pd.to_datetime(self.start_date)
             end_ts = pd.to_datetime(self.end_date)
             
-            # Calculate buffer start (add extra candles for SMA calculation)
+            # Calculate buffer start (add extra candles for EMA calculation)
             minutes_per_candle = self._timeframe_to_minutes(self.timeframe)
             buffer_minutes = 1000 * minutes_per_candle  # 1000 candles buffer
             buffer_start = start_ts - pd.Timedelta(minutes=buffer_minutes)
@@ -273,15 +275,21 @@ class StrategyOptimizer:
         slow_window_range: List[int],
         atr_window_range: Optional[List[int]] = None,
         atr_multiplier_range: Optional[List[float]] = None,
+        adx_window_range: Optional[List[int]] = None,
+        adx_threshold_range: Optional[List[int]] = None,
+        macd_fast_range: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform grid search optimization over parameter combinations.
         
         Args:
-            fast_window_range: List of fast SMA window values to test
-            slow_window_range: List of slow SMA window values to test
+            fast_window_range: List of fast EMA window values to test
+            slow_window_range: List of slow EMA window values to test
             atr_window_range: Optional list of ATR window values to test (for VolatilityAdjustedStrategy)
             atr_multiplier_range: Optional list of ATR multiplier values to test (for VolatilityAdjustedStrategy)
+            adx_window_range: Optional list of ADX window values to test (for Market Regime Filter)
+            adx_threshold_range: Optional list of ADX threshold values to test (for Market Regime Filter)
+            macd_fast_range: Optional list of MACD fast EMA windows to test (for Momentum Filter)
         
         Returns:
             List of results sorted by Sharpe ratio (descending)
@@ -293,10 +301,73 @@ class StrategyOptimizer:
         print("STARTING GRID SEARCH OPTIMIZATION")
         print("=" * 70)
         
-        # Determine if we're optimizing ATR parameters (4D) or just SMA (2D)
-        is_4d_optimization = atr_window_range is not None and atr_multiplier_range is not None
+        # Determine optimization dimension
+        is_7d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            adx_window_range is not None and adx_threshold_range is not None and
+            macd_fast_range is not None
+        )
+        is_6d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            adx_window_range is not None and adx_threshold_range is not None and
+            not is_7d_optimization
+        )
+        is_4d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            not is_6d_optimization
+        )
         
-        if is_4d_optimization:
+        if is_7d_optimization:
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range,
+                adx_window_range,
+                adx_threshold_range,
+                macd_fast_range,
+            ))
+            
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m, adx_w, adx_t, macd_f)
+                for fast, slow, atr_w, atr_m, adx_w, adx_t, macd_f in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (7D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+            print(f"  ADX Window:     {adx_window_range}")
+            print(f"  ADX Threshold:  {adx_threshold_range}")
+            print(f"  MACD Fast:      {macd_fast_range}")
+        elif is_6d_optimization:
+            # 6D optimization: fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range,
+                adx_window_range,
+                adx_threshold_range
+            ))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m, adx_w, adx_t) 
+                for fast, slow, atr_w, atr_m, adx_w, adx_t in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (6D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+            print(f"  ADX Window:     {adx_window_range}")
+            print(f"  ADX Threshold:  {adx_threshold_range}")
+        elif is_4d_optimization:
             # 4D optimization: fast_window, slow_window, atr_window, atr_multiplier
             param_combinations = list(itertools.product(
                 fast_window_range,
@@ -345,7 +416,34 @@ class StrategyOptimizer:
         # Run backtest for each valid combination
         for idx, params in enumerate(valid_combinations, start=1):
             try:
-                if is_4d_optimization:
+                if is_7d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold, macd_fast = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        macd_fast=macd_fast,
+                        iteration=idx,
+                        total=total_tests,
+                    )
+                elif is_6d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        iteration=idx,
+                        total=total_tests,
+                    )
+                elif is_4d_optimization:
                     fast_window, slow_window, atr_window, atr_multiplier = params
                     result = self._run_single_backtest(
                         cached_handler=cached_handler,
@@ -353,6 +451,8 @@ class StrategyOptimizer:
                         slow_window=slow_window,
                         atr_window=atr_window,
                         atr_multiplier=atr_multiplier,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=total_tests,
                     )
@@ -362,6 +462,10 @@ class StrategyOptimizer:
                         cached_handler=cached_handler,
                         fast_window=fast_window,
                         slow_window=slow_window,
+                        atr_window=None,
+                        atr_multiplier=None,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=total_tests,
                     )
@@ -389,6 +493,16 @@ class StrategyOptimizer:
                 print(f"  ATR Window: {best['params']['atr_window']}")
             if 'atr_multiplier' in best['params']:
                 print(f"  ATR Multiplier: {best['params']['atr_multiplier']}")
+            if 'adx_window' in best['params']:
+                print(f"  ADX Window: {best['params']['adx_window']}")
+            if 'adx_threshold' in best['params']:
+                print(f"  ADX Threshold: {best['params']['adx_threshold']}")
+            if 'macd_fast' in best['params']:
+                print(f"  MACD Fast: {best['params']['macd_fast']}")
+            if 'macd_slow' in best['params']:
+                print(f"  MACD Slow: {best['params']['macd_slow']}")
+            if 'macd_signal' in best['params']:
+                print(f"  MACD Signal: {best['params']['macd_signal']}")
             print(f"  Sharpe Ratio: {best['metrics']['sharpe_ratio']:.4f}")
             print(f"  Total Return: {best['metrics']['total_return'] * 100:.2f}%")
             print(f"  Max Drawdown: {best['metrics']['max_drawdown'] * 100:.2f}%")
@@ -402,6 +516,9 @@ class StrategyOptimizer:
         top_n: int = 5,
         atr_window_range: Optional[List[int]] = None,
         atr_multiplier_range: Optional[List[float]] = None,
+        adx_window_range: Optional[List[int]] = None,
+        adx_threshold_range: Optional[List[int]] = None,
+        macd_fast_range: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform grid search with In-Sample/Out-of-Sample validation.
@@ -411,11 +528,14 @@ class StrategyOptimizer:
         2. Phase 2 (Out-of-Sample): Validate top N performers on data from split_date to end_date
         
         Args:
-            fast_window_range: List of fast SMA window values to test
-            slow_window_range: List of slow SMA window values to test
+            fast_window_range: List of fast EMA window values to test
+            slow_window_range: List of slow EMA window values to test
             top_n: Number of top performers to validate (default: 5)
             atr_window_range: Optional list of ATR window values to test (for VolatilityAdjustedStrategy)
             atr_multiplier_range: Optional list of ATR multiplier values to test (for VolatilityAdjustedStrategy)
+            adx_window_range: Optional list of ADX window values to test (for Market Regime Filter)
+            adx_threshold_range: Optional list of ADX threshold values to test (for Market Regime Filter)
+            macd_fast_range: Optional list of MACD fast EMA windows to test (for Momentum Filter)
         
         Returns:
             List of top N results with both IS and OOS metrics
@@ -438,10 +558,73 @@ class StrategyOptimizer:
         print("PHASE 1: IN-SAMPLE GRID SEARCH")
         print("=" * 70)
         
-        # Determine if we're optimizing ATR parameters (4D) or just SMA (2D)
-        is_4d_optimization = atr_window_range is not None and atr_multiplier_range is not None
+        # Determine optimization dimension
+        is_7d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            adx_window_range is not None and adx_threshold_range is not None and
+            macd_fast_range is not None
+        )
+        is_6d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            adx_window_range is not None and adx_threshold_range is not None and
+            not is_7d_optimization
+        )
+        is_4d_optimization = (
+            atr_window_range is not None and atr_multiplier_range is not None and
+            not is_6d_optimization
+        )
         
-        if is_4d_optimization:
+        if is_7d_optimization:
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range,
+                adx_window_range,
+                adx_threshold_range,
+                macd_fast_range,
+            ))
+            
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m, adx_w, adx_t, macd_f) 
+                for fast, slow, atr_w, atr_m, adx_w, adx_t, macd_f in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (7D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+            print(f"  ADX Window:     {adx_window_range}")
+            print(f"  ADX Threshold:  {adx_threshold_range}")
+            print(f"  MACD Fast:      {macd_fast_range}")
+        elif is_6d_optimization:
+            # 6D optimization: fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold
+            param_combinations = list(itertools.product(
+                fast_window_range,
+                slow_window_range,
+                atr_window_range,
+                atr_multiplier_range,
+                adx_window_range,
+                adx_threshold_range
+            ))
+            
+            # Filter out invalid combinations (fast >= slow)
+            valid_combinations = [
+                (fast, slow, atr_w, atr_m, adx_w, adx_t) 
+                for fast, slow, atr_w, atr_m, adx_w, adx_t in param_combinations
+                if fast < slow
+            ]
+            
+            print(f"Parameter Space (6D):")
+            print(f"  Fast Window:    {fast_window_range}")
+            print(f"  Slow Window:    {slow_window_range}")
+            print(f"  ATR Window:     {atr_window_range}")
+            print(f"  ATR Multiplier: {atr_multiplier_range}")
+            print(f"  ADX Window:     {adx_window_range}")
+            print(f"  ADX Threshold:  {adx_threshold_range}")
+        elif is_4d_optimization:
             # 4D optimization: fast_window, slow_window, atr_window, atr_multiplier
             param_combinations = list(itertools.product(
                 fast_window_range,
@@ -493,7 +676,40 @@ class StrategyOptimizer:
         # Run backtest for each valid combination on IN-SAMPLE period
         for idx, params in enumerate(valid_combinations, start=1):
             try:
-                if is_4d_optimization:
+                if is_7d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold, macd_fast = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        macd_fast=macd_fast,
+                        iteration=idx,
+                        total=total_tests,
+                        start_date=self.start_date,
+                        end_date=self.split_date,
+                        phase="IS",
+                    )
+                elif is_6d_optimization:
+                    fast_window, slow_window, atr_window, atr_multiplier, adx_window, adx_threshold = params
+                    result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        iteration=idx,
+                        total=total_tests,
+                        start_date=self.start_date,
+                        end_date=self.split_date,
+                        phase="IS",
+                    )
+                elif is_4d_optimization:
                     fast_window, slow_window, atr_window, atr_multiplier = params
                     result = self._run_single_backtest(
                         cached_handler=cached_handler,
@@ -501,6 +717,8 @@ class StrategyOptimizer:
                         slow_window=slow_window,
                         atr_window=atr_window,
                         atr_multiplier=atr_multiplier,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=total_tests,
                         start_date=self.start_date,
@@ -513,6 +731,10 @@ class StrategyOptimizer:
                         cached_handler=cached_handler,
                         fast_window=fast_window,
                         slow_window=slow_window,
+                        atr_window=None,
+                        atr_multiplier=None,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=total_tests,
                         start_date=self.start_date,
@@ -541,14 +763,27 @@ class StrategyOptimizer:
         # Select top N performers
         top_performers = is_results[:min(top_n, len(is_results))]
         
-        # Check if we have 4D parameters
-        is_4d = top_performers and 'atr_window' in top_performers[0]['params'] and 'atr_multiplier' in top_performers[0]['params']
+        # Check if we have 7D, 6D, 4D, or 2D parameters
+        is_7d = top_performers and 'macd_fast' in top_performers[0]['params']
+        is_6d = top_performers and 'adx_window' in top_performers[0]['params'] and 'adx_threshold' in top_performers[0]['params'] and not is_7d
+        is_4d = top_performers and 'atr_window' in top_performers[0]['params'] and 'atr_multiplier' in top_performers[0]['params'] and not (is_7d or is_6d)
         
         print(f"\nTop {len(top_performers)} In-Sample Performers:")
         for rank, result in enumerate(top_performers, start=1):
             params = result['params']
             metrics = result['metrics']
-            if is_4d:
+            if is_7d:
+                print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d}, "
+                      f"ATR_W={params['atr_window']:2d}, ATR_M={params['atr_multiplier']:.1f}, "
+                      f"ADX_W={params['adx_window']:2d}, ADX_T={params['adx_threshold']:2d}, "
+                      f"MACD_F={params['macd_fast']:2d} "
+                      f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
+            elif is_6d:
+                print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d}, "
+                      f"ATR_W={params['atr_window']:2d}, ATR_M={params['atr_multiplier']:.1f}, "
+                      f"ADX_W={params['adx_window']:2d}, ADX_T={params['adx_threshold']:2d} "
+                      f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
+            elif is_4d:
                 print(f"  [{rank}] Fast={params['fast_window']:2d}, Slow={params['slow_window']:2d}, "
                       f"ATR_W={params['atr_window']:2d}, ATR_M={params['atr_multiplier']:.1f} "
                       f"→ Sharpe: {metrics['sharpe_ratio']:7.3f}, Return: {metrics['total_return']*100:6.2f}%")
@@ -573,7 +808,47 @@ class StrategyOptimizer:
             slow_window = params['slow_window']
             
             try:
-                if is_4d:
+                if is_7d:
+                    atr_window = params['atr_window']
+                    atr_multiplier = params['atr_multiplier']
+                    adx_window = params['adx_window']
+                    adx_threshold = params['adx_threshold']
+                    macd_fast = params['macd_fast']
+                    oos_result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        macd_fast=macd_fast,
+                        iteration=idx,
+                        total=len(top_performers),
+                        start_date=self.split_date,
+                        end_date=self.end_date,
+                        phase="OOS",
+                    )
+                elif is_6d:
+                    atr_window = params['atr_window']
+                    atr_multiplier = params['atr_multiplier']
+                    adx_window = params['adx_window']
+                    adx_threshold = params['adx_threshold']
+                    oos_result = self._run_single_backtest(
+                        cached_handler=cached_handler,
+                        fast_window=fast_window,
+                        slow_window=slow_window,
+                        atr_window=atr_window,
+                        atr_multiplier=atr_multiplier,
+                        adx_window=adx_window,
+                        adx_threshold=adx_threshold,
+                        iteration=idx,
+                        total=len(top_performers),
+                        start_date=self.split_date,
+                        end_date=self.end_date,
+                        phase="OOS",
+                    )
+                elif is_4d:
                     atr_window = params['atr_window']
                     atr_multiplier = params['atr_multiplier']
                     oos_result = self._run_single_backtest(
@@ -582,6 +857,8 @@ class StrategyOptimizer:
                         slow_window=slow_window,
                         atr_window=atr_window,
                         atr_multiplier=atr_multiplier,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=len(top_performers),
                         start_date=self.split_date,
@@ -593,6 +870,10 @@ class StrategyOptimizer:
                         cached_handler=cached_handler,
                         fast_window=fast_window,
                         slow_window=slow_window,
+                        atr_window=None,
+                        atr_multiplier=None,
+                        adx_window=None,
+                        adx_threshold=None,
                         iteration=idx,
                         total=len(top_performers),
                         start_date=self.split_date,
@@ -619,11 +900,36 @@ class StrategyOptimizer:
         print(f"Successfully validated: {len(validated_results)}/{len(top_performers)}")
         
         if validated_results:
-            # Check if we have 4D parameters
+            # Check if we have 7D, 6D, 4D, or 2D parameters
             first_params = validated_results[0]['params']
-            is_4d = 'atr_window' in first_params and 'atr_multiplier' in first_params
+            is_7d = 'macd_fast' in first_params
+            is_6d = 'adx_window' in first_params and 'adx_threshold' in first_params and not is_7d
+            is_4d = 'atr_window' in first_params and 'atr_multiplier' in first_params and not (is_7d or is_6d)
             
-            if is_4d:
+            if is_7d:
+                print(f"\nValidation Results (sorted by IS Sharpe):")
+                print(f"{'Rank':<6} {'Params':<55} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
+                print("-" * 125)
+                for rank, result in enumerate(validated_results, start=1):
+                    params = result['params']
+                    is_m = result['IS_metrics']
+                    oos_m = result['OOS_metrics']
+                    print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d},{params['atr_window']:2d},{params['atr_multiplier']:.1f},"
+                          f"{params['adx_window']:2d},{params['adx_threshold']:2d},{params['macd_fast']:2d}){'':<5} "
+                          f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
+                          f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
+            elif is_6d:
+                print(f"\nValidation Results (sorted by IS Sharpe):")
+                print(f"{'Rank':<6} {'Params':<45} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
+                print("-" * 105)
+                for rank, result in enumerate(validated_results, start=1):
+                    params = result['params']
+                    is_m = result['IS_metrics']
+                    oos_m = result['OOS_metrics']
+                    print(f"{rank:<6} ({params['fast_window']:2d},{params['slow_window']:2d},{params['atr_window']:2d},{params['atr_multiplier']:.1f},{params['adx_window']:2d},{params['adx_threshold']:2d}){'':<15} "
+                          f"{is_m['sharpe_ratio']:>7.3f}      {oos_m['sharpe_ratio']:>7.3f}      "
+                          f"{is_m['total_return']*100:>6.2f}%      {oos_m['total_return']*100:>6.2f}%")
+            elif is_4d:
                 print(f"\nValidation Results (sorted by IS Sharpe):")
                 print(f"{'Rank':<6} {'Params':<25} {'IS Sharpe':<12} {'OOS Sharpe':<12} {'IS Return':<12} {'OOS Return':<12}")
                 print("-" * 85)
@@ -661,14 +967,17 @@ class StrategyOptimizer:
         phase: str = "",
         atr_window: Optional[int] = None,
         atr_multiplier: Optional[float] = None,
+        adx_window: Optional[int] = None,
+        adx_threshold: Optional[int] = None,
+        macd_fast: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run a single backtest iteration with specific parameters.
         
         Args:
             cached_handler: Mock handler with pre-loaded data
-            fast_window: Fast SMA period
-            slow_window: Slow SMA period
+            fast_window: Fast EMA period
+            slow_window: Slow EMA period
             iteration: Current iteration number
             total: Total number of iterations
             start_date: Optional override for backtest start date
@@ -676,6 +985,9 @@ class StrategyOptimizer:
             phase: Optional phase label (e.g., "IS", "OOS") for logging
             atr_window: Optional ATR window period (for VolatilityAdjustedStrategy)
             atr_multiplier: Optional ATR multiplier (for VolatilityAdjustedStrategy)
+            adx_window: Optional ADX window period (for Market Regime Filter)
+            adx_threshold: Optional ADX threshold (for Market Regime Filter)
+            macd_fast: Optional MACD fast EMA window (for Momentum Filter)
         
         Returns:
             Dictionary with params and metrics
@@ -695,7 +1007,7 @@ class StrategyOptimizer:
             "slow_window": slow_window,
         }
         
-        # Add ATR parameters if provided (for 4D optimization)
+        # Add ATR parameters if provided (for 4D/6D optimization)
         if atr_window is not None:
             params_dict["atr_window"] = atr_window
         if atr_multiplier is not None:
@@ -708,6 +1020,32 @@ class StrategyOptimizer:
             params=params_dict
         )
         
+        # Instantiate market regime filter if ADX parameters are provided
+        regime_filter = None
+        if adx_window is not None and adx_threshold is not None:
+            filter_config = RegimeFilterConfig(
+                adx_window=adx_window,
+                adx_threshold=adx_threshold
+            )
+            regime_filter = ADXVolatilityFilter(config=filter_config)
+        
+        # Instantiate momentum filter (MACD) if config is available
+        momentum_filter = None
+        applied_momentum_config: Optional[MomentumFilterConfig] = None
+        base_momentum_config = self.base_momentum_filter_config
+        if macd_fast is not None:
+            macd_slow = base_momentum_config.macd_slow if base_momentum_config else 26
+            macd_signal = base_momentum_config.macd_signal if base_momentum_config else 9
+            applied_momentum_config = MomentumFilterConfig(
+                macd_fast=macd_fast,
+                macd_slow=macd_slow,
+                macd_signal=macd_signal,
+            )
+            momentum_filter = MACDConfirmationFilter(config=applied_momentum_config)
+        elif base_momentum_config is not None:
+            applied_momentum_config = base_momentum_config
+            momentum_filter = MACDConfirmationFilter(config=applied_momentum_config)
+        
         # Instantiate strategy using factory function
         strategy_map = {
             "sma_cross": SmaCrossStrategy,
@@ -717,7 +1055,11 @@ class StrategyOptimizer:
         
         strategy_name = strategy_config.name
         strategy_class = strategy_map.get(strategy_name, SmaCrossStrategy)
-        strategy = strategy_class(config=strategy_config)
+        strategy = strategy_class(
+            config=strategy_config,
+            regime_filter=regime_filter,
+            momentum_filter=momentum_filter,
+        )
         
         # Create backtester with cached data handler
         backtester = Backtester(
@@ -760,12 +1102,36 @@ class StrategyOptimizer:
         if atr_multiplier is not None:
             params_dict['atr_multiplier'] = atr_multiplier
         
+        # Add ADX parameters if provided
+        if adx_window is not None:
+            params_dict['adx_window'] = adx_window
+        if adx_threshold is not None:
+            params_dict['adx_threshold'] = adx_threshold
+        
+        if applied_momentum_config is not None:
+            params_dict['macd_fast'] = applied_momentum_config.macd_fast
+            params_dict['macd_slow'] = applied_momentum_config.macd_slow
+            params_dict['macd_signal'] = applied_momentum_config.macd_signal
+        
         # Build log message
-        if atr_window is not None and atr_multiplier is not None:
+        if macd_fast is not None:
+            print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d}, "
+                  f"ATR_W={atr_window:2d}, ATR_M={atr_multiplier:.1f}, "
+                  f"ADX_W={adx_window:2d}, ADX_T={adx_threshold:2d}, MACD_F={macd_fast:2d} "
+                  f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
+        elif adx_window is not None and adx_threshold is not None:
+            # 6D optimization: show all 6 parameters
+            print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d}, "
+                  f"ATR_W={atr_window:2d}, ATR_M={atr_multiplier:.1f}, "
+                  f"ADX_W={adx_window:2d}, ADX_T={adx_threshold:2d} "
+                  f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
+        elif atr_window is not None and atr_multiplier is not None:
+            # 4D optimization: show ATR parameters
             print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d}, "
                   f"ATR_W={atr_window:2d}, ATR_M={atr_multiplier:.1f} "
                   f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
         else:
+            # 2D optimization: show only EMA parameters
             print(f"  {phase_str}[{iteration:3d}/{total}] Fast={fast_window:2d}, Slow={slow_window:2d} "
                   f"→ Sharpe: {sharpe_str:>7}, Return: {result_metrics['total_return']*100:>6.2f}%")
         
@@ -862,11 +1228,18 @@ Examples:
   %(prog)s
   %(prog)s --start-date 2023-01-01 --end-date 2023-12-31
   %(prog)s --symbol ETH/USDT --timeframe 4h
-  %(prog)s --fast 5,10,15,20 --slow 30,40,50,60
+  %(prog)s --fast 8,12,15,21 --slow 35,50,80,100
+  
+  # 4D optimization (VolatilityAdjustedStrategy with ATR parameters)
+  %(prog)s --fast 8,12,15 --slow 50,80,100 --atr-window 10,14,20 --atr-multiplier 1.5,2.0,2.5
+  
+  # 6D optimization (VolatilityAdjustedStrategy + Market Regime Filter)
+  %(prog)s --fast 8,12 --slow 35,50 --atr-window 10,14 --atr-multiplier 2.0 --adx-window 10,14,20 --adx-threshold 20,25,30,35
   
   # Walk-forward optimization with Out-of-Sample validation
   %(prog)s --start-date 2023-01-01 --end-date 2023-12-31 --split-date 2023-10-01
   %(prog)s --start-date 2023-01-01 --end-date 2024-01-01 --split-date 2023-07-01 --top-n 10
+  %(prog)s --start-date 2020-01-01 --end-date 2025-11-20 --split-date 2023-01-01 --fast 8,12,15,21 --slow 35,50,80,100 --atr-window 10,14,20 --atr-multiplier 1.5,2.0,2.5 --adx-window 10,14,20 --adx-threshold 20,25,30,35
         """
     )
     
@@ -917,29 +1290,50 @@ Examples:
     parser.add_argument(
         '--fast',
         type=str,
-        default='5,10,15,20,25',
-        help='Fast window range as comma-separated values (default: 5,10,15,20,25)'
+        default='9,12,15,21',
+        help='Fast window range as comma-separated values (default: 9,12,15,21)'
     )
     
     parser.add_argument(
         '--slow',
         type=str,
-        default='20,30,40,50,60,80',
-        help='Slow window range as comma-separated values (default: 20,30,40,50,60,80)'
+        default='45,50,55,65',
+        help='Slow window range as comma-separated values (default: 45,50,55,65)'
     )
     
     parser.add_argument(
         '--atr-window',
         type=str,
-        default=None,
-        help='ATR window range as comma-separated values (for VolatilityAdjustedStrategy, e.g., 10,14,20)'
+        default='10,14,20',
+        help='ATR window range as comma-separated values (default: 10,14,20)'
     )
     
     parser.add_argument(
         '--atr-multiplier',
         type=str,
-        default=None,
-        help='ATR multiplier range as comma-separated values (for VolatilityAdjustedStrategy, e.g., 1.5,2.0,2.5)'
+        default='1.5,2.0,2.5',
+        help='ATR multiplier range as comma-separated values (default: 1.5,2.0,2.5)'
+    )
+    
+    parser.add_argument(
+        '--adx-window',
+        type=str,
+        default='10,14,20',
+        help='ADX window range as comma-separated values (default: 10,14,20)'
+    )
+    
+    parser.add_argument(
+        '--adx-threshold',
+        type=str,
+        default='25,30,35',
+        help='ADX threshold range as comma-separated values (default: 25,30,35; for Market Regime Filter)'
+    )
+    
+    parser.add_argument(
+        '--macd-fast',
+        type=str,
+        default='8,12,16',
+        help='MACD fast window range as comma-separated values (default: 8,12,16)'
     )
     
     parser.add_argument(
@@ -1003,12 +1397,48 @@ Examples:
         if args.atr_multiplier:
             atr_multiplier_range = [float(x.strip()) for x in args.atr_multiplier.split(',')]
         
+        # Parse ADX parameters if provided
+        adx_window_range = None
+        adx_threshold_range = None
+        if args.adx_window:
+            adx_window_range = [int(x.strip()) for x in args.adx_window.split(',')]
+        if args.adx_threshold:
+            adx_threshold_range = [int(x.strip()) for x in args.adx_threshold.split(',')]
+        
+        # Parse MACD parameters (momentum filter) if provided
+        macd_fast_range = None
+        if args.macd_fast:
+            macd_fast_range = [int(x.strip()) for x in args.macd_fast.split(',')]
+        
         # Validate: if one ATR param is provided, both should be provided
         if (atr_window_range is None) != (atr_multiplier_range is None):
             print("⚠ Warning: --atr-window and --atr-multiplier must both be provided for 4D optimization.")
             print("  Falling back to 2D optimization (fast_window, slow_window only)")
             atr_window_range = None
             atr_multiplier_range = None
+        
+        # Validate: if one ADX param is provided, both should be provided (and ATR params too for higher dimensions)
+        if (adx_window_range is None) != (adx_threshold_range is None):
+            print("⚠ Warning: --adx-window and --adx-threshold must both be provided for 6D optimization.")
+            print("  Falling back to 4D optimization (without ADX parameters)")
+            adx_window_range = None
+            adx_threshold_range = None
+        
+        # Validate: ADX params require ATR params for 6D optimization
+        if (adx_window_range is not None or adx_threshold_range is not None):
+            if atr_window_range is None or atr_multiplier_range is None:
+                print("⚠ Warning: --adx-window and --adx-threshold require --atr-window and --atr-multiplier for 6D optimization.")
+                print("  Falling back to 4D optimization (without ADX parameters)")
+                adx_window_range = None
+                adx_threshold_range = None
+        
+        # Validate: MACD fast range requires full 6D setup to enable 7D
+        if macd_fast_range is not None:
+            missing_dimensions = any(x is None for x in [atr_window_range, atr_multiplier_range, adx_window_range, adx_threshold_range])
+            if missing_dimensions:
+                print("⚠ Warning: --macd-fast requires ATR and ADX ranges for 7D optimization.")
+                print("  Falling back to lower-dimensional optimization without MACD sweep")
+                macd_fast_range = None
         
         print("=" * 70)
         print("OPTIMIZATION PARAMETERS")
@@ -1022,7 +1452,20 @@ Examples:
             print(f"  Split Date:  {args.split_date} (Walk-Forward Mode)")
         print(f"  Fast Range:  {fast_range}")
         print(f"  Slow Range:  {slow_range}")
-        if atr_window_range and atr_multiplier_range:
+        if macd_fast_range and adx_window_range and adx_threshold_range and atr_window_range and atr_multiplier_range:
+            print(f"  ATR Window Range:  {atr_window_range}")
+            print(f"  ATR Multiplier Range:  {atr_multiplier_range}")
+            print(f"  ADX Window Range:  {adx_window_range}")
+            print(f"  ADX Threshold Range:  {adx_threshold_range}")
+            print(f"  MACD Fast Range:  {macd_fast_range}")
+            print(f"  → 7D Optimization Mode (Fast, Slow, ATR_W, ATR_M, ADX_W, ADX_T, MACD_F)")
+        elif adx_window_range and adx_threshold_range and atr_window_range and atr_multiplier_range:
+            print(f"  ATR Window Range:  {atr_window_range}")
+            print(f"  ATR Multiplier Range:  {atr_multiplier_range}")
+            print(f"  ADX Window Range:  {adx_window_range}")
+            print(f"  ADX Threshold Range:  {adx_threshold_range}")
+            print(f"  → 6D Optimization Mode (Fast, Slow, ATR_W, ATR_M, ADX_W, ADX_T)")
+        elif atr_window_range and atr_multiplier_range:
             print(f"  ATR Window Range:  {atr_window_range}")
             print(f"  ATR Multiplier Range:  {atr_multiplier_range}")
             print(f"  → 4D Optimization Mode (Fast, Slow, ATR_W, ATR_M)")
@@ -1058,6 +1501,7 @@ Examples:
             split_date=args.split_date,
             base_strategy_config=strategy_config,
             risk_config=risk_config,
+            momentum_filter_config=getattr(bot_config, "momentum_filter", None) if 'bot_config' in locals() else None,
         )
         
         # STEP 1: Load data ONCE
@@ -1072,6 +1516,9 @@ Examples:
                 top_n=args.top_n,
                 atr_window_range=atr_window_range,
                 atr_multiplier_range=atr_multiplier_range,
+                adx_window_range=adx_window_range,
+                adx_threshold_range=adx_threshold_range,
+                macd_fast_range=macd_fast_range,
             )
         else:
             # Standard optimization (no validation)
@@ -1080,6 +1527,9 @@ Examples:
                 slow_window_range=slow_range,
                 atr_window_range=atr_window_range,
                 atr_multiplier_range=atr_multiplier_range,
+                adx_window_range=adx_window_range,
+                adx_threshold_range=adx_threshold_range,
+                macd_fast_range=macd_fast_range,
             )
         
         # STEP 3: Save results

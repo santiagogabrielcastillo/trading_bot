@@ -31,8 +31,8 @@ from app.config.models import BotConfig
 from app.core.database import init_db, db
 from app.core.bot import TradingBot
 from app.core.interfaces import IExecutor
+from app.core.strategy_factory import create_strategy
 from app.data.handler import CryptoDataHandler
-from app.strategies.sma_cross import SmaCrossStrategy
 from app.execution.mock_executor import MockExecutor
 from app.execution.binance_executor import BinanceExecutor
 from app.repositories.trade_repository import TradeRepository
@@ -138,32 +138,45 @@ def create_data_handler(config: BotConfig) -> CryptoDataHandler:
     return data_handler
 
 
-def create_strategy(config: BotConfig) -> SmaCrossStrategy:
+def create_strategy_from_config(config: BotConfig):
     """
-    Create and initialize the trading strategy.
+    Create and initialize the trading strategy using the centralized factory.
+    
+    This function uses the strategy factory which handles:
+    - Dynamic strategy class resolution
+    - Optional market regime filter instantiation
+    - Backward compatibility
     
     Args:
         config: Bot configuration
-        
+    
     Returns:
-        Initialized strategy instance
+        Initialized strategy instance (may be SmaCrossStrategy, VolatilityAdjustedStrategy, etc.)
     """
     logger.info("Creating strategy...")
     
-    # For now, we only support SMA Cross strategy
-    if config.strategy.name.lower() != "sma_cross":
-        raise ValueError(
-            f"Unsupported strategy: {config.strategy.name}. "
-            "Only 'sma_cross' is currently implemented."
-        )
+    try:
+        strategy = create_strategy(config)
+        
+        # Log strategy details
+        logger.info(f"Strategy created: {config.strategy.name}")
+        logger.info(f"  Parameters: {config.strategy.params}")
+        
+        # Log filter status if present
+        if config.regime_filter:
+            logger.info(
+                f"  Market Regime Filter: Enabled "
+                f"(ADX window={config.regime_filter.adx_window}, "
+                f"threshold={config.regime_filter.adx_threshold})"
+            )
+        else:
+            logger.info("  Market Regime Filter: Disabled")
+        
+        return strategy
     
-    strategy = SmaCrossStrategy(config.strategy)
-    logger.info(
-        f"Strategy created: {config.strategy.name} "
-        f"(fast={config.strategy.params.get('fast_window')}, "
-        f"slow={config.strategy.params.get('slow_window')})"
-    )
-    return strategy
+    except ValueError as e:
+        logger.error(f"Failed to create strategy: {e}")
+        raise
 
 
 def create_executor(config: BotConfig) -> IExecutor:
@@ -232,7 +245,7 @@ def create_executor(config: BotConfig) -> IExecutor:
 def create_bot(
     config: BotConfig,
     data_handler: CryptoDataHandler,
-    strategy: SmaCrossStrategy,
+    strategy,
     executor: IExecutor,
 ) -> TradingBot:
     """
@@ -295,7 +308,7 @@ def main():
         data_handler = create_data_handler(config)
         
         # 4. Create strategy
-        strategy = create_strategy(config)
+        strategy = create_strategy_from_config(config)
         
         # 5. Create executor (based on config.execution_mode)
         executor = create_executor(config)

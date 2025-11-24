@@ -54,6 +54,8 @@ class MockExecutor(IExecutor):
         quantity: float,
         order_type: OrderType,
         price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
     ) -> dict:
         """
         Execute a simulated order and persist to database.
@@ -133,6 +135,8 @@ class MockExecutor(IExecutor):
             "info": {
                 "trade_db_id": trade.id,
                 "simulated": True,
+                "stop_loss_price": stop_loss_price,
+                "take_profit_price": take_profit_price,
             },
         }
     

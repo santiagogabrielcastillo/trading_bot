@@ -9,7 +9,7 @@ import ccxt
 
 from app.config.models import BotConfig, ExchangeConfig
 from app.data.handler import CryptoDataHandler
-from app.strategies.sma_cross import SmaCrossStrategy
+from app.core.strategy_factory import create_strategy
 from app.backtesting.engine import Backtester
 
 
@@ -331,12 +331,17 @@ def main() -> None:
     # Build exchange and components
     exchange = build_exchange(config.exchange)
     data_handler = CryptoDataHandler(exchange)
-    strategy = SmaCrossStrategy(config.strategy)
+    
+    # Create strategy with optional regime filter (factory handles filter instantiation)
+    strategy = create_strategy(config)
+    
+    # Create backtester with risk config if available
     backtester = Backtester(
         data_handler=data_handler,
         strategy=strategy,
         symbol=config.strategy.symbol,
         timeframe=config.strategy.timeframe,
+        risk_config=config.risk,
     )
 
     # Run backtest

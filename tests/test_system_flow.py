@@ -521,20 +521,20 @@ def test_signal_metadata_accuracy(trading_bot, mock_data_handler, repositories, 
     metadata = signal.signal_metadata
     
     # Verify metadata contains indicator values
-    assert 'sma_fast' in metadata, "Metadata should include fast SMA"
-    assert 'sma_slow' in metadata, "Metadata should include slow SMA"
+    assert 'ema_fast' in metadata, "Metadata should include fast EMA"
+    assert 'ema_slow' in metadata, "Metadata should include slow EMA"
     assert 'close' in metadata, "Metadata should include close price"
     
     # Verify values are reasonable
-    assert metadata['sma_fast'] > 0, "Fast SMA should be positive"
-    assert metadata['sma_slow'] > 0, "Slow SMA should be positive"
+    assert metadata['ema_fast'] > 0, "Fast EMA should be positive"
+    assert metadata['ema_slow'] > 0, "Slow EMA should be positive"
     assert metadata['close'] > 0, "Close price should be positive"
     
-    # For rising data, fast SMA should eventually be > slow SMA
+    # For rising data, fast EMA should eventually be > slow EMA
     # (though exact values depend on window sizes and data)
     print(f"\nSignal Metadata:")
-    print(f"  Fast SMA: ${metadata['sma_fast']:.2f}")
-    print(f"  Slow SMA: ${metadata['sma_slow']:.2f}")
+    print(f"  Fast EMA: ${metadata['ema_fast']:.2f}")
+    print(f"  Slow EMA: ${metadata['ema_slow']:.2f}")
     print(f"  Close:    ${metadata['close']:.2f}")
 
 

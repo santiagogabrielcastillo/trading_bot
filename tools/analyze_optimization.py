@@ -2,8 +2,9 @@
 """
 Multi-Objective Robustness Analyzer for Walk-Forward Optimization Results
 
-This script processes 4D Walk-Forward Validation (WFO) output and selects the most
-robust parameters based on the stability of Out-of-Sample (OOS) performance.
+This script processes multi-dimensional (4D-7D) Walk-Forward Validation (WFO)
+output and selects the most robust parameters based on the stability of
+Out-of-Sample (OOS) performance.
 
 The Robustness Factor (FR) is calculated as:
     FR = Sharpe_OOS × (Sharpe_OOS / Sharpe_IS)
@@ -189,7 +190,7 @@ def format_params_string(params: Dict[str, Any]) -> str:
         params: Dictionary of parameter names and values
         
     Returns:
-        Formatted string (e.g., "Fast=10, Slow=100, ATR_W=14, ATR_M=2.0")
+        Formatted string (e.g., "Fast=10, Slow=100, ATR_W=14, ATR_M=2.0, ADX_W=14, ADX_T=25")
     """
     # Map parameter names to display names
     param_display = {
@@ -197,6 +198,11 @@ def format_params_string(params: Dict[str, Any]) -> str:
         'slow_window': 'Slow',
         'atr_window': 'ATR_W',
         'atr_multiplier': 'ATR_M',
+        'adx_window': 'ADX_W',
+        'adx_threshold': 'ADX_T',
+        'macd_fast': 'MACD_F',
+        'macd_slow': 'MACD_S',
+        'macd_signal': 'MACD_SIG',
     }
     
     parts = []
@@ -222,33 +228,49 @@ def format_top_results_table(analyzed_results: List[Dict[str, Any]], top_n: int 
         Formatted string table
     """
     lines = []
-    lines.append("=" * 100)
-    lines.append("TOP ROBUST PARAMETER CONFIGURATIONS".center(100))
-    lines.append("=" * 100)
+    # Determine parameter width based on whether we have 6D parameters
+    has_7d = any('macd_fast' in r['params'] for r in analyzed_results[:top_n]) if analyzed_results else False
+    has_6d = False
+    if not has_7d:
+        has_6d = any('adx_window' in r['params'] for r in analyzed_results[:top_n]) if analyzed_results else False
+    if has_7d:
+        param_width = 70
+        total_width = 140
+    elif has_6d:
+        param_width = 60
+        total_width = 120
+    else:
+        param_width = 40
+        total_width = 100
+    
+    lines.append("=" * total_width)
+    lines.append("TOP ROBUST PARAMETER CONFIGURATIONS".center(total_width))
+    lines.append("=" * total_width)
     lines.append("")
     
     # Table header
     header = (
         f"{'Rank':<6} "
-        f"{'Parameters':<40} "
+        f"{'Parameters':<{param_width}} "
         f"{'Sharpe_IS':>10} "
         f"{'Sharpe_OOS':>12} "
         f"{'Degradation':>12} "
         f"{'Robustness (FR)':>16}"
     )
     lines.append(header)
-    lines.append("-" * 100)
+    lines.append("-" * total_width)
     
     # Display top N results
     for i, result in enumerate(analyzed_results[:top_n], 1):
         params_str = format_params_string(result['params'])
         # Truncate params if too long
-        if len(params_str) > 38:
-            params_str = params_str[:35] + "..."
+        max_len = param_width - 2
+        if len(params_str) > max_len:
+            params_str = params_str[:max_len - 3] + "..."
         
         line = (
             f"{i:<6} "
-            f"{params_str:<40} "
+            f"{params_str:<{param_width}} "
             f"{result['sharpe_is']:>10.3f} "
             f"{result['sharpe_oos']:>12.3f} "
             f"{result['degradation_ratio']:>12.3f} "
@@ -256,7 +278,7 @@ def format_top_results_table(analyzed_results: List[Dict[str, Any]], top_n: int 
         )
         lines.append(line)
     
-    lines.append("=" * 100)
+    lines.append("=" * total_width)
     
     return "\n".join(lines)
 
@@ -285,8 +307,12 @@ def format_recommendation(result: Dict[str, Any], metadata: Dict[str, Any]) -> s
     
     params = result['params']
     
-    # Format for config.json (assuming VolatilityAdjustedStrategy)
-    if 'atr_window' in params and 'atr_multiplier' in params:
+    # Format for config.json
+    # Check for 6D parameters (includes ADX filter)
+    include_regime = 'adx_window' in params and 'adx_threshold' in params and 'atr_window' in params and 'atr_multiplier' in params
+    include_momentum = 'macd_fast' in params
+    
+    if include_regime:
         lines.append("  {")
         lines.append(f'    "name": "VolatilityAdjustedStrategy",')
         lines.append(f'    "symbol": "{metadata.get("symbol", "BTC/USDT")}",')
@@ -297,9 +323,39 @@ def format_recommendation(result: Dict[str, Any], metadata: Dict[str, Any]) -> s
         lines.append(f'      "atr_window": {params["atr_window"]},')
         lines.append(f'      "atr_multiplier": {params["atr_multiplier"]}')
         lines.append("    }")
+        if include_regime:
+            lines.append('    "regime_filter": {')
+            lines.append(f'      "adx_window": {params["adx_window"]},')
+            lines.append(f'      "adx_threshold": {params["adx_threshold"]}')
+            lines.append("    }" + ("," if include_momentum else ""))
+        if include_momentum:
+            lines.append('    "momentum_filter": {')
+            lines.append(f'      "macd_fast": {params["macd_fast"]},')
+            lines.append(f'      "macd_slow": {params.get("macd_slow", 26)},')
+            lines.append(f'      "macd_signal": {params.get("macd_signal", 9)}')
+            lines.append("    }")
+        lines.append("  }")
+    elif 'atr_window' in params and 'atr_multiplier' in params:
+        # 4D optimization (VolatilityAdjustedStrategy without filter)
+        lines.append("  {")
+        lines.append(f'    "name": "VolatilityAdjustedStrategy",')
+        lines.append(f'    "symbol": "{metadata.get("symbol", "BTC/USDT")}",')
+        lines.append(f'    "timeframe": "{metadata.get("timeframe", "1h")}",')
+        lines.append('    "params": {')
+        lines.append(f'      "fast_window": {params["fast_window"]},')
+        lines.append(f'      "slow_window": {params["slow_window"]},')
+        lines.append(f'      "atr_window": {params["atr_window"]},')
+        lines.append(f'      "atr_multiplier": {params["atr_multiplier"]}')
+        lines.append("    }")
+        if include_momentum:
+            lines.append('    "momentum_filter": {')
+            lines.append(f'      "macd_fast": {params["macd_fast"]},')
+            lines.append(f'      "macd_slow": {params.get("macd_slow", 26)},')
+            lines.append(f'      "macd_signal": {params.get("macd_signal", 9)}')
+            lines.append("    }")
         lines.append("  }")
     else:
-        # Fallback for 2D optimization (SMA Cross)
+        # 2D optimization (SMA Cross)
         lines.append("  {")
         lines.append(f'    "name": "SmaCrossStrategy",')
         lines.append(f'    "symbol": "{metadata.get("symbol", "BTC/USDT")}",')
@@ -308,6 +364,12 @@ def format_recommendation(result: Dict[str, Any], metadata: Dict[str, Any]) -> s
         lines.append(f'      "fast_window": {params["fast_window"]},')
         lines.append(f'      "slow_window": {params["slow_window"]}')
         lines.append("    }")
+        if include_momentum:
+            lines.append('    "momentum_filter": {')
+            lines.append(f'      "macd_fast": {params["macd_fast"]},')
+            lines.append(f'      "macd_slow": {params.get("macd_slow", 26)},')
+            lines.append(f'      "macd_signal": {params.get("macd_signal", 9)}')
+            lines.append("    }")
         lines.append("  }")
     
     lines.append("")

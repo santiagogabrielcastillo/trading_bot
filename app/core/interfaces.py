@@ -4,7 +4,7 @@ from typing import Optional
 import pandas as pd
 
 # Importaciones relativas dentro del paquete app
-from app.core.enums import OrderSide, OrderType, PositionStatus
+from app.core.enums import OrderSide, OrderType, PositionStatus, Signal
 from app.config.models import StrategyConfig
 
 # --- Interfaz de Datos ---
@@ -58,6 +58,20 @@ class IMarketRegimeFilter(ABC):
     signals during unfavorable market conditions.
     """
     
+    @property
+    @abstractmethod
+    def max_lookback_period(self) -> int:
+        """
+        Return the maximum lookback period required by all filter indicators.
+        
+        This is used by the backtesting engine to determine how many initial
+        candles to skip before starting signal generation.
+        
+        Returns:
+            Number of periods needed for indicator warm-up
+        """
+        pass
+    
     @abstractmethod
     def get_regime(self, data: pd.DataFrame) -> pd.Series:
         """
@@ -72,20 +86,68 @@ class IMarketRegimeFilter(ABC):
         """
         pass
 
+
+class IMomentumFilter(ABC):
+    """
+    Abstract interface for momentum confirmation filters.
+    
+    These filters confirm acceleration in the direction of a trade (e.g., MACD histogram),
+    acting as the final gate before executing an entry signal.
+    """
+    
+    @property
+    @abstractmethod
+    def max_lookback_period(self) -> int:
+        """Return the maximum lookback period required by the momentum indicator."""
+        pass
+    
+    @abstractmethod
+    def is_entry_valid(self, data: pd.DataFrame, direction: Signal) -> pd.Series:
+        """
+        Determine whether entries in the specified direction are valid.
+        
+        Args:
+            data: DataFrame with OHLCV data and indicators
+            direction: Signal enum indicating BUY or SELL
+        """
+        pass
+
 # --- Interfaz de Estrategia ---
 
 
 class BaseStrategy(ABC):
-    def __init__(self, config: StrategyConfig, regime_filter: Optional['IMarketRegimeFilter'] = None):
+    def __init__(
+        self,
+        config: StrategyConfig,
+        regime_filter: Optional['IMarketRegimeFilter'] = None,
+        momentum_filter: Optional['IMomentumFilter'] = None,
+    ):
         """
         Initialize base strategy.
         
         Args:
             config: Strategy configuration
             regime_filter: Optional market regime filter for context-aware signal generation
+            momentum_filter: Optional momentum confirmation filter for acceleration gating
         """
         self.config = config
         self.regime_filter = regime_filter
+        self.momentum_filter = momentum_filter
+
+    @property
+    @abstractmethod
+    def max_lookback_period(self) -> int:
+        """
+        Return the maximum lookback period required by all strategy indicators.
+        
+        This includes the lookback required by any injected filters.
+        Used by the backtesting engine to determine how many initial candles
+        to skip before starting signal generation.
+        
+        Returns:
+            Number of periods needed for indicator warm-up
+        """
+        pass
 
     @abstractmethod
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

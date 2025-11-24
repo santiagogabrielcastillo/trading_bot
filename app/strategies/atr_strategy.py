@@ -1,7 +1,7 @@
 """
 Volatility-Adjusted Strategy using ATR (Average True Range).
 
-This strategy enhances the basic SMA cross strategy by incorporating:
+This strategy enhances the basic EMA cross strategy by incorporating:
 1. ATR-based volatility filtering to avoid low-volatility whipsaws
 2. Dynamic stop-loss calculation based on market volatility
 3. Risk-aware position sizing through ATR multiples
@@ -15,19 +15,18 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from app.core.interfaces import BaseStrategy, IMarketRegimeFilter
-from app.core.enums import MarketState
+from app.core.interfaces import BaseStrategy, IMarketRegimeFilter, IMomentumFilter
+from app.core.enums import MarketState, Signal
 from app.config.models import StrategyConfig
-from typing import Optional
 
 
 class VolatilityAdjustedStrategy(BaseStrategy):
     """
-    Advanced trading strategy combining SMA Cross with ATR volatility filtering.
+    Advanced trading strategy combining EMA Cross with ATR volatility filtering.
     
     Signal Generation Rules:
-    - BUY: Fast SMA crosses above Slow SMA AND price shows sufficient volatility
-    - SELL: Fast SMA crosses below Slow SMA
+    - BUY: Fast EMA crosses above Slow EMA AND price shows sufficient volatility
+    - SELL: Fast EMA crosses below Slow EMA
     - HOLD: No cross or insufficient volatility
     
     Risk Management:
@@ -40,20 +39,25 @@ class VolatilityAdjustedStrategy(BaseStrategy):
     - Follows the same interface as SmaCrossStrategy
     """
     
-    def __init__(self, config: StrategyConfig, regime_filter: Optional[IMarketRegimeFilter] = None):
+    def __init__(
+        self,
+        config: StrategyConfig,
+        regime_filter: Optional[IMarketRegimeFilter] = None,
+        momentum_filter: Optional[IMomentumFilter] = None,
+    ):
         """
         Initialize the Volatility-Adjusted Strategy.
         
         Args:
             config: Strategy configuration containing params dict with:
-                - fast_window: Fast SMA period (default: 10)
-                - slow_window: Slow SMA period (default: 100)
+                - fast_window: Fast EMA period (default: 10)
+                - slow_window: Slow EMA period (default: 100)
                 - atr_window: ATR calculation period (default: 14)
                 - atr_multiplier: Stop-loss distance multiplier (default: 2.0)
                 - volatility_lookback: Period for volatility check (default: 5)
             regime_filter: Optional market regime filter for context-aware signal generation
         """
-        super().__init__(config, regime_filter)
+        super().__init__(config, regime_filter, momentum_filter)
         
         # Extract parameters with safe defaults
         self.fast_window = config.params.get('fast_window', 10)
@@ -71,7 +75,7 @@ class VolatilityAdjustedStrategy(BaseStrategy):
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate all technical indicators: SMA (fast/slow) and ATR.
+        Calculate all technical indicators: EMA (fast/slow) and ATR.
         
         ATR (Average True Range) measures market volatility:
         - True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
@@ -81,11 +85,11 @@ class VolatilityAdjustedStrategy(BaseStrategy):
             df: DataFrame with OHLCV data (columns: open, high, low, close, volume)
             
         Returns:
-            DataFrame with added columns: sma_fast, sma_slow, atr, stop_loss_price
+            DataFrame with added columns: ema_fast, ema_slow, atr, stop_loss_price
         """
-        # 1. Calculate SMAs (same as SmaCrossStrategy)
-        df['sma_fast'] = df['close'].rolling(window=self.fast_window).mean()
-        df['sma_slow'] = df['close'].rolling(window=self.slow_window).mean()
+        # 1. Calculate EMAs (same as SmaCrossStrategy, now EMA-based)
+        df['ema_fast'] = df['close'].ewm(span=self.fast_window, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=self.slow_window, adjust=False).mean()
         
         # 2. Calculate True Range (vectorized)
         # TR = max(high-low, |high-prev_close|, |low-prev_close|)
@@ -113,13 +117,13 @@ class VolatilityAdjustedStrategy(BaseStrategy):
         
         Signal Logic:
         1. Golden Cross (BUY):
-           - Fast SMA crosses above Slow SMA (same as basic strategy)
+           - Fast EMA crosses above Slow EMA (same as basic strategy)
            - AND price has moved significantly (volatility filter)
            - AND market regime is TRENDING_UP (if regime filter is enabled)
            - Volatility Check: price_change_over_N_bars > 1.0 * current_ATR
         
         2. Death Cross (SELL):
-           - Fast SMA crosses below Slow SMA
+           - Fast EMA crosses below Slow EMA
            - AND market regime is TRENDING_DOWN (if regime filter is enabled)
            - Note: Exit signals (SL/TP) are NOT filtered by regime (handled by engine/bot)
         
@@ -138,12 +142,12 @@ class VolatilityAdjustedStrategy(BaseStrategy):
         # Initialize signal column
         df['signal'] = 0
         
-        # --- Step 1: Detect SMA Crossovers (same as SmaCrossStrategy) ---
+        # --- Step 1: Detect EMA Crossovers (same as SmaCrossStrategy) ---
         
-        prev_fast = df['sma_fast'].shift(1)
-        prev_slow = df['sma_slow'].shift(1)
-        curr_fast = df['sma_fast']
-        curr_slow = df['sma_slow']
+        prev_fast = df['ema_fast'].shift(1)
+        prev_slow = df['ema_slow'].shift(1)
+        curr_fast = df['ema_fast']
+        curr_slow = df['ema_slow']
         
         # Golden Cross: Fast crosses above Slow
         golden_cross = (prev_fast <= prev_slow) & (curr_fast > curr_slow)
@@ -184,12 +188,26 @@ class VolatilityAdjustedStrategy(BaseStrategy):
             buy_regime_ok = pd.Series(True, index=df.index)
             sell_regime_ok = pd.Series(True, index=df.index)
         
-        # --- Step 4: Combine conditions ---
+        # --- Step 4: Apply Momentum Filter (if available) ---
+        
+        if self.momentum_filter is not None:
+            try:
+                momentum_buy_ok = self.momentum_filter.is_entry_valid(df, Signal.BUY)
+                momentum_sell_ok = self.momentum_filter.is_entry_valid(df, Signal.SELL)
+            except Exception:
+                momentum_buy_ok = pd.Series(True, index=df.index)
+                momentum_sell_ok = pd.Series(True, index=df.index)
+        else:
+            momentum_buy_ok = pd.Series(True, index=df.index)
+            momentum_sell_ok = pd.Series(True, index=df.index)
+        
+        # --- Step 5: Combine conditions ---
         
         # BUY: Golden Cross AND sufficient volatility AND favorable regime (if filter active)
         buy_condition = golden_cross & has_volatility
         if regime_filter_active and self.regime_filter is not None:
             buy_condition = buy_condition & buy_regime_ok
+        buy_condition = buy_condition & momentum_buy_ok
         
         # SELL: Death Cross AND favorable regime (if filter active)
         # Note: Exit signals (SL/TP) are handled by backtesting engine/trading bot,
@@ -197,8 +215,9 @@ class VolatilityAdjustedStrategy(BaseStrategy):
         sell_condition = death_cross
         if regime_filter_active and self.regime_filter is not None:
             sell_condition = sell_condition & sell_regime_ok
+        sell_condition = sell_condition & momentum_sell_ok
         
-        # --- Step 5: Assign signals (vectorized) ---
+        # --- Step 6: Assign signals (vectorized) ---
         
         df['signal'] = np.where(
             buy_condition,
@@ -237,19 +256,46 @@ class VolatilityAdjustedStrategy(BaseStrategy):
         except (IndexError, KeyError):
             return None
     
-    def get_required_warmup_periods(self) -> int:
+    @property
+    def max_lookback_period(self) -> int:
         """
-        Calculate the minimum number of periods required for indicator warmup.
+        Return the maximum lookback period required by all strategy indicators.
         
-        This is the maximum of all window sizes to ensure no NaN values
-        in the calculation period.
+        For VolatilityAdjustedStrategy, this is the maximum of:
+        - fast_window
+        - slow_window
+        - atr_window
+        - volatility_lookback
+        - filter's max_lookback_period (if filter is present)
         
         Returns:
-            Number of periods needed for warmup
+            Number of periods needed for indicator warm-up
         """
-        return max(
+        # Get strategy-specific lookback (max of all strategy windows)
+        strategy_lookback = max(
+            self.fast_window,
             self.slow_window,
             self.atr_window,
             self.volatility_lookback
         )
+        
+        lookbacks = [strategy_lookback]
+        if self.regime_filter is not None:
+            lookbacks.append(self.regime_filter.max_lookback_period)
+        if self.momentum_filter is not None:
+            lookbacks.append(self.momentum_filter.max_lookback_period)
+        
+        return max(lookbacks)
+    
+    def get_required_warmup_periods(self) -> int:
+        """
+        DEPRECATED: Use max_lookback_period property instead.
+        
+        This method is kept for backward compatibility but now delegates
+        to the max_lookback_period property.
+        
+        Returns:
+            Number of periods needed for warmup
+        """
+        return self.max_lookback_period
 

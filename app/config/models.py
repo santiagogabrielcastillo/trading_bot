@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from typing import Literal
+from typing import Literal, Optional
 
 class ExchangeConfig(BaseModel):
     """Configuración de conexión al Exchange"""
@@ -26,11 +26,11 @@ class VolatilityAdjustedStrategyConfig(BaseModel):
     """
     Configuration for Volatility-Adjusted Strategy (ATR-based).
     
-    This strategy combines SMA crossover with ATR-based volatility filtering
+    This strategy now combines EMA crossover with ATR-based volatility filtering
     and dynamic stop-loss calculation for risk management.
     """
-    fast_window: int = Field(10, gt=0, description="Fast SMA window period")
-    slow_window: int = Field(100, gt=0, description="Slow SMA window period")
+    fast_window: int = Field(10, gt=0, description="Fast EMA window period")
+    slow_window: int = Field(100, gt=0, description="Slow EMA window period")
     atr_window: int = Field(14, gt=0, description="ATR calculation window")
     atr_multiplier: float = Field(2.0, gt=0, description="ATR multiplier for stop-loss distance")
     volatility_lookback: int = Field(5, gt=0, description="Lookback period for volatility filter")
@@ -54,6 +54,15 @@ class RegimeFilterConfig(BaseModel):
     adx_window: int = Field(14, gt=0, description="ADX calculation window period")
     adx_threshold: int = Field(25, gt=0, description="ADX threshold for trend strength (typical: 20-25)")
 
+
+class MomentumFilterConfig(BaseModel):
+    """
+    Configuration model for MACD-based momentum confirmation filter.
+    """
+    macd_fast: int = Field(12, gt=0, description="MACD fast EMA window")
+    macd_slow: int = Field(26, gt=0, description="MACD slow EMA window")
+    macd_signal: int = Field(9, gt=0, description="MACD signal line EMA window")
+
 class BotConfig(BaseModel):
     """Configuración Global"""
     exchange: ExchangeConfig
@@ -63,6 +72,14 @@ class BotConfig(BaseModel):
     execution_mode: Literal["paper", "live"] = Field(
         default="paper",
         description="Execution mode: 'paper' for simulated trading, 'live' for real money"
+    )
+    regime_filter: Optional[RegimeFilterConfig] = Field(
+        default=None,
+        description="Optional market regime filter configuration. If provided, enables context-aware signal generation based on market conditions."
+    )
+    momentum_filter: Optional[MomentumFilterConfig] = Field(
+        default=None,
+        description="Optional MACD-based momentum confirmation filter configuration."
     )
     
     @field_validator('execution_mode')

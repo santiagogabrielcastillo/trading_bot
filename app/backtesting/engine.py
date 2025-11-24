@@ -69,10 +69,23 @@ class Backtester:
         if df.empty:
             raise ValueError("No market data available from the data handler.")
 
+        # Calculate indicators on full dataset (including buffer)
         df = self.strategy.calculate_indicators(df)
         df = self.strategy.generate_signals(df)
         
-        # NOW slice to the requested window (after indicators are calculated)
+        # Get the maximum lookback period required by strategy and filter
+        max_lookback = self.strategy.max_lookback_period
+        
+        # Skip the warm-up period by slicing from max_lookback index
+        # This ensures all indicators are fully calculated before signal processing
+        if max_lookback > 0 and len(df) > max_lookback:
+            df = df.iloc[max_lookback:].copy()
+            logger.info(
+                f"Skipped {max_lookback} initial candles for indicator warm-up. "
+                f"Starting backtest at {df.index[0]}"
+            )
+        
+        # NOW slice to the requested window (after indicators are calculated and warm-up skipped)
         df = df.loc[(df.index >= start_ts) & (df.index <= end_ts)].copy()
         if df.empty:
             raise ValueError("No market data available for the requested window after indicator calculation.")

@@ -17,3 +17,10 @@ class MarketState(str, Enum):
     TRENDING_UP = "TRENDING_UP"      # Strong uptrend
     TRENDING_DOWN = "TRENDING_DOWN"  # Strong downtrend
     RANGING = "RANGING"              # Sideways/ranging market
+
+
+class Signal(int, Enum):
+    """Signal direction enum used by strategies and confirmation filters."""
+    BUY = 1
+    SELL = -1
+    HOLD = 0

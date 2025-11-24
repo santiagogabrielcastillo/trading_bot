@@ -22,6 +22,15 @@
       "volatility_lookback": 5
     }
   },
-"db_path": "trading_state.db",
-"execution_mode": "paper"
+  "regime_filter": {
+    "adx_window": 14,
+    "adx_threshold": 25
+  },
+  "momentum_filter": {
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9
+  },
+  "db_path": "trading_state.db",
+  "execution_mode": "paper"
 }

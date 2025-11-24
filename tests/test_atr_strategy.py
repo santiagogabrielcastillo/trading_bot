@@ -2,7 +2,7 @@
 Comprehensive unit tests for VolatilityAdjustedStrategy (ATR-based).
 
 Tests cover:
-1. Indicator calculation (SMA + ATR)
+1. Indicator calculation (EMA + ATR)
 2. Signal generation with volatility filtering
 3. Stop-loss price calculation
 4. Edge cases and error handling
@@ -15,6 +15,33 @@ from datetime import datetime, timedelta
 
 from app.strategies.atr_strategy import VolatilityAdjustedStrategy
 from app.config.models import StrategyConfig, VolatilityAdjustedStrategyConfig
+from app.core.interfaces import IMomentumFilter
+from app.core.enums import Signal
+
+
+class AlwaysFalseMomentumFilter(IMomentumFilter):
+    """Momentum filter that blocks every entry signal."""
+    
+    @property
+    def max_lookback_period(self) -> int:
+        return 7
+    
+    def is_entry_valid(self, data: pd.DataFrame, direction: Signal) -> pd.Series:
+        return pd.Series(False, index=data.index)
+
+
+class LargeLookbackMomentumFilter(IMomentumFilter):
+    """Momentum filter with a large lookback requirement."""
+    
+    def __init__(self, lookback: int = 250):
+        self._lookback = lookback
+    
+    @property
+    def max_lookback_period(self) -> int:
+        return self._lookback
+    
+    def is_entry_valid(self, data: pd.DataFrame, direction: Signal) -> pd.Series:
+        return pd.Series(True, index=data.index)
 
 
 class TestVolatilityAdjustedStrategy:
@@ -119,13 +146,13 @@ class TestVolatilityAdjustedStrategy:
         df = strategy.calculate_indicators(sample_ohlcv_data.copy())
         
         # Check all expected columns exist
-        assert 'sma_fast' in df.columns
-        assert 'sma_slow' in df.columns
+        assert 'ema_fast' in df.columns
+        assert 'ema_slow' in df.columns
         assert 'atr' in df.columns
         assert 'stop_loss_price' in df.columns
     
-    def test_calculate_indicators_sma_correctness(self, default_config):
-        """Test that SMA calculations are mathematically correct."""
+    def test_calculate_indicators_ema_correctness(self, default_config):
+        """Test that EMA calculations are mathematically correct."""
         strategy = VolatilityAdjustedStrategy(default_config)
         
         # Create simple test data: prices = [10, 20, 30, 40, 50]
@@ -143,11 +170,11 @@ class TestVolatilityAdjustedStrategy:
         
         df = strategy.calculate_indicators(df)
         
-        # SMA(3) at index 4: mean(30, 40, 50) = 40
-        assert abs(df['sma_fast'].iloc[-1] - 40.0) < 0.01
+        expected_fast = pd.Series([10, 20, 30, 40, 50]).ewm(span=3, adjust=False).mean().iloc[-1]
+        expected_slow = pd.Series([10, 20, 30, 40, 50]).ewm(span=5, adjust=False).mean().iloc[-1]
         
-        # SMA(5) at index 4: mean(10, 20, 30, 40, 50) = 30
-        assert abs(df['sma_slow'].iloc[-1] - 30.0) < 0.01
+        assert abs(df['ema_fast'].iloc[-1] - expected_fast) < 1e-9
+        assert abs(df['ema_slow'].iloc[-1] - expected_slow) < 1e-9
     
     def test_calculate_indicators_atr_calculation(self, default_config):
         """Test that ATR is calculated correctly."""
@@ -307,7 +334,7 @@ class TestVolatilityAdjustedStrategy:
         assert buy_signals == 0, "Volatility filter should block low-volatility crosses"
     
     def test_generate_signals_neutral_when_no_cross(self, default_config):
-        """Test that signals remain neutral when SMAs don't cross."""
+        """Test that signals remain neutral when EMAs don't cross."""
         strategy = VolatilityAdjustedStrategy(default_config)
         
         # Create sideways price action (no crosses)
@@ -328,6 +355,48 @@ class TestVolatilityAdjustedStrategy:
         # Most signals should be 0 (neutral) in sideways market
         neutral_pct = (df['signal'] == 0).sum() / len(df)
         assert neutral_pct > 0.8  # At least 80% neutral
+    
+    def test_momentum_filter_blocks_buy_entries(self):
+        """Momentum filter should block BUY entries when it returns False."""
+        config = StrategyConfig(
+            name="VolatilityAdjustedStrategy",
+            symbol="BTC/USDT",
+            timeframe="1h",
+            params={
+                'fast_window': 5,
+                'slow_window': 15,
+                'atr_window': 8,
+                'atr_multiplier': 1.5,
+                'volatility_lookback': 2,
+            }
+        )
+        strategy = VolatilityAdjustedStrategy(config, momentum_filter=AlwaysFalseMomentumFilter())
+        
+        n_bars = 80
+        downtrend = np.linspace(60, 50, 40)
+        uptrend = np.linspace(50, 100, 40)
+        prices = np.concatenate([downtrend, uptrend])
+        df = pd.DataFrame({
+            'open': prices,
+            'high': prices + 5,
+            'low': prices - 5,
+            'close': prices,
+            'volume': [1000] * n_bars,
+        })
+        
+        df = strategy.calculate_indicators(df)
+        df = strategy.generate_signals(df)
+        
+        assert (df['signal'] == 1).sum() == 0
+    
+    def test_max_lookback_period_includes_momentum_filter(self, default_config):
+        """Strategy lookback should honor the largest filter requirement."""
+        strategy = VolatilityAdjustedStrategy(
+            default_config,
+            momentum_filter=LargeLookbackMomentumFilter(lookback=300),
+        )
+        
+        assert strategy.max_lookback_period == 300
     
     # --- Test 4: Utility Methods ---
     
@@ -525,8 +594,8 @@ class TestVolatilityAdjustedStrategy:
         assert 'signal' in df.columns
         assert 'atr' in df.columns
         assert 'stop_loss_price' in df.columns
-        assert 'sma_fast' in df.columns
-        assert 'sma_slow' in df.columns
+        assert 'ema_fast' in df.columns
+        assert 'ema_slow' in df.columns
         
         # Verify data types
         assert df['signal'].dtype in [np.int64, int]

@@ -86,8 +86,8 @@ def mock_strategy():
     strategy = Mock()
     
     def calculate_indicators_side_effect(df):
-        df['sma_fast'] = df['close'].rolling(10).mean()
-        df['sma_slow'] = df['close'].rolling(50).mean()
+        df['ema_fast'] = df['close'].ewm(span=10, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=50, adjust=False).mean()
         return df
     
     def generate_signals_side_effect(df):
@@ -326,25 +326,25 @@ def test_calculate_order_quantity_different_price(trading_bot):
 # Indicator Extraction Tests
 # ============================================================================
 
-def test_extract_indicators_with_sma(trading_bot, mock_data_handler):
+def test_extract_indicators_with_ema(trading_bot, mock_data_handler):
     """Test indicator extraction from DataFrame."""
     df = mock_data_handler.get_historical_data()
-    df['sma_fast'] = 50100.0
-    df['sma_slow'] = 49900.0
+    df['ema_fast'] = 50100.0
+    df['ema_slow'] = 49900.0
     df['close'] = 50000.0
     
     indicators = trading_bot._extract_indicators(df)
     
-    assert 'sma_fast' in indicators
-    assert 'sma_slow' in indicators
+    assert 'ema_fast' in indicators
+    assert 'ema_slow' in indicators
     assert 'close' in indicators
-    assert indicators['sma_fast'] == 50100.0
-    assert indicators['sma_slow'] == 49900.0
+    assert indicators['ema_fast'] == 50100.0
+    assert indicators['ema_slow'] == 49900.0
     assert indicators['close'] == 50000.0
 
 
-def test_extract_indicators_without_sma(trading_bot):
-    """Test indicator extraction when SMAs are missing."""
+def test_extract_indicators_without_ema(trading_bot):
+    """Test indicator extraction when EMAs are missing."""
     df = pd.DataFrame({
         'close': [50000.0],
     })
@@ -352,8 +352,8 @@ def test_extract_indicators_without_sma(trading_bot):
     indicators = trading_bot._extract_indicators(df)
     
     assert 'close' in indicators
-    assert 'sma_fast' not in indicators
-    assert 'sma_slow' not in indicators
+    assert 'ema_fast' not in indicators
+    assert 'ema_slow' not in indicators
 
 
 # ============================================================================
@@ -365,7 +365,7 @@ def test_save_signal_persists_metadata(trading_bot, in_memory_db):
     signal_value = 1
     timestamp = datetime.now()
     price = 50000.0
-    indicators = {'sma_fast': 50100, 'sma_slow': 49900, 'close': 50000}
+    indicators = {'ema_fast': 50100, 'ema_slow': 49900, 'close': 50000}
     
     trading_bot._save_signal(signal_value, timestamp, price, indicators)
     
