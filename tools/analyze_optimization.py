@@ -196,6 +196,8 @@ def format_params_string(params: Dict[str, Any]) -> str:
     param_display = {
         'fast_window': 'Fast',
         'slow_window': 'Slow',
+        'bb_window': 'BB_W',
+        'bb_std_dev': 'BB_Std',
         'atr_window': 'ATR_W',
         'atr_multiplier': 'ATR_M',
         'adx_window': 'ADX_W',
@@ -203,6 +205,7 @@ def format_params_string(params: Dict[str, Any]) -> str:
         'macd_fast': 'MACD_F',
         'macd_slow': 'MACD_S',
         'macd_signal': 'MACD_SIG',
+        'max_hold_hours': 'MaxH',
     }
     
     parts = []
@@ -308,11 +311,44 @@ def format_recommendation(result: Dict[str, Any], metadata: Dict[str, Any]) -> s
     params = result['params']
     
     # Format for config.json
-    # Check for 6D parameters (includes ADX filter)
+    # Check if BB strategy or EMA/SMA strategy
+    is_bb_strategy = 'bb_window' in params or 'bb_std_dev' in params
     include_regime = 'adx_window' in params and 'adx_threshold' in params and 'atr_window' in params and 'atr_multiplier' in params
     include_momentum = 'macd_fast' in params
+    include_max_hold = 'max_hold_hours' in params
     
-    if include_regime:
+    if is_bb_strategy:
+        # BollingerBandStrategy
+        lines.append("  {")
+        lines.append(f'    "name": "BollingerBandStrategy",')
+        lines.append(f'    "symbol": "{metadata.get("symbol", "BTC/USDT")}",')
+        lines.append(f'    "timeframe": "{metadata.get("timeframe", "1h")}",')
+        lines.append('    "params": {')
+        if 'bb_window' in params:
+            lines.append(f'      "bb_window": {params["bb_window"]},')
+        if 'bb_std_dev' in params:
+            lines.append(f'      "bb_std_dev": {params["bb_std_dev"]},')
+        if 'atr_window' in params:
+            lines.append(f'      "atr_window": {params["atr_window"]},')
+        if 'atr_multiplier' in params:
+            lines.append(f'      "atr_multiplier": {params["atr_multiplier"]}')
+        lines.append("    }")
+        if include_max_hold:
+            lines.append(f'    "max_hold_hours": {params["max_hold_hours"]}')
+        if include_regime:
+            lines.append(',')
+            lines.append('    "regime_filter": {')
+            lines.append(f'      "adx_window": {params["adx_window"]},')
+            lines.append(f'      "adx_threshold": {params["adx_threshold"]}')
+            lines.append("    }" + ("," if include_momentum else ""))
+        if include_momentum:
+            lines.append('    "momentum_filter": {')
+            lines.append(f'      "macd_fast": {params["macd_fast"]},')
+            lines.append(f'      "macd_slow": {params.get("macd_slow", 26)},')
+            lines.append(f'      "macd_signal": {params.get("macd_signal", 9)}')
+            lines.append("    }")
+        lines.append("  }")
+    elif include_regime:
         lines.append("  {")
         lines.append(f'    "name": "VolatilityAdjustedStrategy",')
         lines.append(f'    "symbol": "{metadata.get("symbol", "BTC/USDT")}",')

@@ -11,20 +11,14 @@
     "take_profit_pct": 0.04
   },
   "strategy": {
-    "name": "VolatilityAdjustedStrategy",
+    "name": "BollingerBandStrategy",
     "symbol": "BTC/USDT",
-    "timeframe": "1h",
+    "timeframe": "4h",
     "params": {
-      "fast_window": 10,
-      "slow_window": 100,
-      "atr_window": 14,
-      "atr_multiplier": 2.0,
-      "volatility_lookback": 5
-    }
-  },
-  "regime_filter": {
-    "adx_window": 14,
-    "adx_threshold": 25
+      "bb_window": 20,
+      "bb_std_dev": 2.0
+    },
+    "long_only": false
   },
   "momentum_filter": {
     "macd_fast": 12,

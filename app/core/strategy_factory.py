@@ -16,6 +16,7 @@ from app.config.models import (
 )
 from app.strategies.sma_cross import SmaCrossStrategy
 from app.strategies.atr_strategy import VolatilityAdjustedStrategy
+from app.strategies.bollinger_band import BollingerBandStrategy
 from app.strategies.regime_filters import ADXVolatilityFilter
 from app.strategies.momentum_filters import MACDConfirmationFilter
 
@@ -59,6 +60,8 @@ def create_strategy(
         "sma_cross": SmaCrossStrategy,
         "SmaCrossStrategy": SmaCrossStrategy,
         "VolatilityAdjustedStrategy": VolatilityAdjustedStrategy,
+        "BollingerBandStrategy": BollingerBandStrategy,
+        "bollinger_band": BollingerBandStrategy,
     }
     
     strategy_name = strategy_config.name

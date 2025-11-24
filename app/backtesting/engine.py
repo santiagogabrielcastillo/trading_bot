@@ -6,6 +6,7 @@ import logging
 
 from app.core.interfaces import IDataHandler, BaseStrategy
 from app.config.models import RiskConfig
+from app.core.enums import ExitReason
 
 logger = logging.getLogger(__name__)
 
@@ -163,16 +164,17 @@ class Backtester:
 
     def _enforce_sl_tp(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Enforce stop-loss and take-profit exits in backtesting.
+        Enforce stop-loss, take-profit, and max hold period exits in backtesting.
         
         This method processes signals sequentially to track position state
-        and override signals when SL/TP levels are hit.
+        and override signals when SL/TP levels are hit or max hold period is exceeded.
+        Priority: SL > TP > Max Hold Period > Strategy Signal
         
         Args:
             df: DataFrame with signals already generated
             
         Returns:
-            DataFrame with signals modified to include SL/TP exits
+            DataFrame with signals modified to include SL/TP/max hold exits
         """
         if df.empty:
             return df
@@ -185,20 +187,28 @@ class Backtester:
         entry_price = 0.0
         stop_loss_price = 0.0
         take_profit_price = 0.0
+        entry_timestamp = None
         entry_index = None
         
-        # Track SL/TP exit statistics
+        # Get max hold period from strategy config (if configured)
+        max_hold_hours = None
+        if hasattr(self.strategy, 'config') and hasattr(self.strategy.config, 'max_hold_hours'):
+            max_hold_hours = self.strategy.config.max_hold_hours
+        
+        # Track exit statistics
         sl_exits = 0
         tp_exits = 0
+        max_hold_exits = 0
         
         # Process each bar sequentially
         for idx in range(len(df)):
             current_price = df.iloc[idx]['close']
             current_signal = df.iloc[idx]['signal']
+            current_timestamp = df.index[idx]
             
-            # Check for SL/TP exit if in position
+            # Check for exits if in position (priority: SL > TP > Max Hold)
             if in_position:
-                # Check stop-loss (price dropped to or below SL)
+                # Check stop-loss (price dropped to or below SL) - HIGHEST PRIORITY
                 if current_price <= stop_loss_price:
                     # Force exit via stop-loss
                     df.loc[df.index[idx], 'signal'] = -1
@@ -211,9 +221,11 @@ class Backtester:
                     entry_price = 0.0
                     stop_loss_price = 0.0
                     take_profit_price = 0.0
+                    entry_timestamp = None
+                    entry_index = None
                     continue
                 
-                # Check take-profit (price rose to or above TP)
+                # Check take-profit (price rose to or above TP) - SECOND PRIORITY
                 if current_price >= take_profit_price:
                     # Force exit via take-profit
                     df.loc[df.index[idx], 'signal'] = -1
@@ -226,12 +238,35 @@ class Backtester:
                     entry_price = 0.0
                     stop_loss_price = 0.0
                     take_profit_price = 0.0
+                    entry_timestamp = None
+                    entry_index = None
                     continue
+                
+                # Check max hold period (elapsed time exceeds limit) - THIRD PRIORITY
+                if max_hold_hours is not None and entry_timestamp is not None:
+                    elapsed_hours = (current_timestamp - entry_timestamp).total_seconds() / 3600
+                    if elapsed_hours >= max_hold_hours:
+                        # Force exit via max hold period
+                        df.loc[df.index[idx], 'signal'] = -1
+                        max_hold_exits += 1
+                        logger.debug(
+                            f"Max hold period exceeded at {df.index[idx]}: "
+                            f"elapsed={elapsed_hours:.2f}h, limit={max_hold_hours}h, "
+                            f"entry={entry_price:.2f}, current={current_price:.2f}"
+                        )
+                        in_position = False
+                        entry_price = 0.0
+                        stop_loss_price = 0.0
+                        take_profit_price = 0.0
+                        entry_timestamp = None
+                        entry_index = None
+                        continue
             
             # Handle entry signals
             if current_signal == 1 and not in_position:
                 # BUY signal - enter position
                 entry_price = current_price
+                entry_timestamp = current_timestamp
                 
                 # Extract stop-loss from DataFrame if available (strategy-provided)
                 if 'stop_loss_price' in df.columns:
@@ -253,7 +288,8 @@ class Backtester:
                 
                 logger.debug(
                     f"Position entered at {df.index[idx]}: entry={entry_price:.2f}, "
-                    f"SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}"
+                    f"SL={stop_loss_price:.2f}, TP={take_profit_price:.2f}, "
+                    f"max_hold={max_hold_hours}h" if max_hold_hours else "max_hold=None"
                 )
             
             # Handle exit signals (strategy-generated SELL)
@@ -263,11 +299,21 @@ class Backtester:
                 entry_price = 0.0
                 stop_loss_price = 0.0
                 take_profit_price = 0.0
+                entry_timestamp = None
+                entry_index = None
         
         # Log summary
-        if sl_exits > 0 or tp_exits > 0:
+        exit_summary_parts = []
+        if sl_exits > 0:
+            exit_summary_parts.append(f"{sl_exits} SL exits")
+        if tp_exits > 0:
+            exit_summary_parts.append(f"{tp_exits} TP exits")
+        if max_hold_exits > 0:
+            exit_summary_parts.append(f"{max_hold_exits} max hold exits")
+        
+        if exit_summary_parts:
             logger.info(
-                f"Backtest SL/TP enforcement: {sl_exits} SL exits, {tp_exits} TP exits "
+                f"Backtest exit enforcement: {', '.join(exit_summary_parts)} "
                 f"out of {len(df)} bars"
             )
         

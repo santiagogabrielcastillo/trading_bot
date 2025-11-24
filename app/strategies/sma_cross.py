@@ -93,6 +93,13 @@ class SmaCrossStrategy(BaseStrategy):
             np.where(sell_condition, -1, 0)
         )
 
+        # --- Aplicar Symmetry Blockade (Long Only) si está habilitado ---
+        
+        # Si long_only es True, convertir todas las señales SELL a NEUTRAL
+        # Esto aísla el rendimiento de la señal LONG del lastre de los shorts fallidos
+        if self.config.long_only:
+            df['signal'] = np.where(df['signal'] == -1, 0, df['signal'])
+
         # Limpieza: Convertir a entero y llenar NaNs (generados por rolling/shift) con 0
         df['signal'] = df['signal'].fillna(0).astype(int)
 

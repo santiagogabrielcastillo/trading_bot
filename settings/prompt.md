@@ -620,6 +620,180 @@ This strategy introduces the concept of **dynamic risk sizing** and **volatility
 
 **Validation:** La próxima corrida WFO debe mostrar una **reducción drástica en el total de *trades*** y alcanzar el nuevo objetivo mínimo: $\text{Sharpe}_{\text{OOS}} \ge 0.55$.
 
+
+---
+
+### Step 29: Timeframe Migration (1H -> 4H) and 8D Rescaling
+
+**Objective:** Migrar la estrategia a un **timeframe de 4H** (el estándar institucional para Swing Trading en cripto) para reducir el ruido. Simultáneamente, implementar el **Filtro de Salida por Tiempo (Max Hold Period)** para mejorar la eficiencia del capital, atacando el cuello de botella del bajo Sharpe OOS.
+
+**Goal:** Asegurar que todos los *lookbacks* (EMA, ATR, ADX, MACD) y las ventanas de optimización se ajusten a la nueva física de $4\text{h}$, y que el *backtesting engine* sea capaz de cerrar *trades* ineficientes. El objetivo de Sharpe OOS es ahora $\mathbf{\ge 0.8}$.
+
+**Mandatory Implementation:**
+
+1.  **Global Timeframe Update:**
+    * **File:** `settings/config.json`.
+    * **Action:** Cambiar el valor del `timeframe` en el bloque `strategy` de `"1h"` a **`"4h"`**.
+
+2.  **Max Hold Period Implementation (Exit Logic - 8ª Dimensión):**
+    * **File:** `app/config/models.py`.
+    * **Action:** Añadir el nuevo campo `max_hold_hours: Optional[int] = None` a `StrategyConfig`.
+    * **File:** `app/backtesting/engine.py`.
+    * **Action:** Modificar la lógica de salida en el *core loop*. Implementar la nueva regla: Si un trade está abierto AND el tiempo transcurrido excede `strategy.config.max_hold_hours`, el trade debe cerrarse inmediatamente con un motivo de salida adecuado (e.g., `EXIT_REASON.MAX_HOLD_PERIOD`). Esta regla es secundaria a SL/TP.
+
+3.  **8D Optimization Extension & Rescaling (Física de 4H):**
+    * **File:** `tools/optimize_strategy.py`.
+    * **Action:** Añadir el nuevo argumento CLI `--max-hold-hours` (8ª dimensión).
+    * **Action:** **Actualizar los rangos de optimización** para la nueva física de $4\text{h}$ y los nuevos objetivos (eliminando valores que generan ruido en $4\text{h}$):
+        * `--fast`: **[8, 13, 21]** (Re-escalado para 4H).
+        * `--slow`: **[21, 34, 50, 89]** (Re-escalado. Máximo 89 períodos en 4H es un Swing de ~2 semanas).
+        * `--adx-threshold`: **[20, 25]** (Menos ruido en 4H; eliminar 30 y 35).
+        * `--macd-fast`: **[12, 16]** (Simplificar la búsqueda de Momentum en 4H).
+        * `--max-hold-hours`: **[48, 72, 96, 120]** (Nueva 8ª Dimensión, buscando *hold* entre 2 y 5 días).
+
+4.  **Ajuste de Lookback MACD:**
+    * **File:** `app/strategies/momentum_filters.py`.
+    * **Action:** No se requiere un cambio de código para el `max_lookback_period` del filtro, ya que la lógica actual toma el máximo lookback del MACD (típicamente 26) y el `BacktestingEngine` lo ajusta. Solo asegurar que el *warm-up* del motor sea correcto.
+
+**Validation:** El próximo WFO debe ejecutarse con el *timeframe* $4\text{h}$ y mostrar un **aumento significativo en la eficiencia y el Sharpe Ratio OOS**, apuntando al nuevo objetivo mínimo de $\text{Sharpe}_{\text{OOS}} \ge 0.8$.
+
+---
+
+### Step 30: Symmetry Blockade (Long Only Diagnostic)
+
+**Objective:** Implementar un mecanismo arquitectónico para desactivar todas las señales de VENTA (SHORT), permitiendo que la estrategia opere solo en la dirección de la tendencia estructural alcista de Bitcoin. Esto aísla el rendimiento de la señal principal (EMA Cross) del lastre de los *shorts* fallidos, diagnosticando si la señal LONG es rentable.
+
+**Goal:** Integrar un *flag* booleano (`long_only`) en la configuración de la estrategia y aplicarlo en la lógica de generación de señales.
+
+**Mandatory Implementation:**
+
+1.  **Configuration Flag (Symmetry Control):**
+    * **File:** `app/config/models.py`.
+    * **Action:** Añadir un nuevo campo opcional a `StrategyConfig`: `long_only: bool = False`.
+
+2.  **Signal Blockade Logic (Core Strategy):**
+    * **File:** `app/strategies/atr_strategy.py`.
+    * **Action:** Modificar el método `generate_signals`. Si `self.config.long_only` es `True`, cualquier señal generada de `Signal.SELL` debe ser sobrescrita a **`Signal.NEUTRAL`**. Esto desactiva el componente de venta de la WFO sin alterar la arquitectura de filtros.
+
+3.  **WFO Execution (Long Only Diagnostic):**
+    * **Action:** La próxima ejecución de la WFO 8D debe realizarse con `long_only = True` en `settings/config.json` (o a través de un argumento CLI si se añade). Se utiliza el mismo espacio de búsqueda 8D, ya que ahora solo se evalúa el rendimiento de los *longs* para esos parámetros.
+
+**Validation:** La próxima WFO de diagnóstico debe mostrar un $\text{Sharpe}_{\text{OOS}} \ge 0.50$. Si el sistema no es rentable operando solo al alza en el mercado OOS, la estrategia Trend Following debe ser descartada a favor de Mean Reversion.
+
+---
+
+### Step 31: Strategy Core Pivot: Implementar Bollinger Band Mean Reversion
+
+**Objective:** Abandonar el núcleo fallido de Trend Following (EMA Cross) y pivotar la estrategia hacia un núcleo de **Mean Reversion (Reversión a la Media)**. Este nuevo enfoque utiliza las Bandas de Bollinger para detectar condiciones de sobre-extensión del precio.
+
+**Goal:** Implementar la nueva `BollingerBandStrategy` que utiliza Bandas de Bollinger (BB) como señal de entrada, heredando la arquitectura existente de gestión de riesgos (ATR/Max Hold) y la triple-capa de filtrado (ADX/MACD).
+
+**Mandatory Implementation:**
+
+1.  **New Strategy Class:**
+    * **File:** Crear un nuevo archivo Python: `app/strategies/bollinger_band.py`.
+    * **Action:** Definir la clase `BollingerBandStrategy` heredando de `BaseStrategy`. Debe aceptar los filtros inyectados existentes (`regime_filter`, `momentum_filter`) y las nuevas configuraciones.
+
+2.  **Configuration Model Update:**
+    * **File:** `app/config/models.py`.
+    * **Action:** Actualizar `StrategyParams` para incluir los parámetros de Bandas de Bollinger: `bb_window: int = 20` y `bb_std_dev: float = 2.0`. (Estos reemplazarán los campos `fast_window` y `slow_window` para esta nueva estrategia).
+
+3.  **Indicator Calculation and Lookback:**
+    * **File:** `app/strategies/bollinger_band.py`.
+    * **Action:** Implementar `calculate_indicators` para computar las Bandas de Bollinger (Upper, Middle, Lower).
+    * **Action:** Implementar la propiedad `@property max_lookback_period` basada en `bb_window` y los filtros inyectados.
+
+4.  **Signal Generation Logic (Core Reversion Signal):**
+    * **File:** `app/strategies/bollinger_band.py`.
+    * **Action:** Implementar `generate_signals` con la lógica de Reversión a la Media:
+        * **LONG Trigger:** El precio actual (`close`) cruza por debajo de la **Banda de Bollinger Inferior** (señalando sobre-extensión/sobreventa).
+        * **SHORT Trigger:** El precio actual (`close`) cruza por encima de la **Banda de Bollinger Superior** (señalando sobre-extensión/sobrecompra).
+        * **Filtrado:** La señal de entrada debe seguir utilizando el encadenamiento booleano de los filtros inyectados (`regime_filter` y `momentum_filter`) para garantizar la calidad y evitar reversiones en tendencias demasiado fuertes.
+
+5.  **Strategy Factory Update:**
+    * **File:** `app/core/strategy_factory.py`.
+    * **Action:** Añadir la nueva `BollingerBandStrategy` al mapeo de estrategias para que pueda ser instanciada por `run_backtest.py` y `tools/optimize_strategy.py`.
+
+**Validation:** La próxima prueba (WFO de Bollinger Bands) deberá establecer una línea base positiva de $\text{Sharpe}_{\text{OOS}} \ge 0.50$ para validar la Reversión a la Media como un *edge* viable.
+
+---
+
+### Step 32: WFO Framework Extension for Bollinger Bands (BB) and Metadata Logging
+
+**Objective:** Extender el framework de optimización (`tools/optimize_strategy.py`) para que pueda aceptar y construir la grilla de búsqueda utilizando los nuevos parámetros de **Bollinger Bands** ($\text{bb\_window}$ y $\text{bb\_std\_dev}$), reemplazando los parámetros de EMA/SMA.
+
+**Goal:** Asegurar que el sistema de optimización no solo ejecute la estrategia BB, sino que también **registre y valide correctamente las 8 dimensiones** de la configuración final en los logs y el archivo JSON de salida.
+
+**Mandatory Implementation:**
+
+1.  **CLI Argument Update (New Dimensions):**
+    * **File:** `tools/optimize_strategy.py`.
+    * **Action:** Añadir nuevos argumentos CLI: `--bb-window` y `--bb-std-dev` para aceptar las listas de parámetros a optimizar.
+
+2.  **Parameter Combination Logic (Strategy-Aware):**
+    * **File:** `tools/optimize_strategy.py`.
+    * **Action:** Modificar la lógica de detección de dimensiones y generación de combinaciones. La función debe:
+        * Detectar si la estrategia a optimizar es `BollingerBandStrategy` (o su alias).
+        * Si es BB, usar `--bb-window` y `--bb-std-dev` en lugar de `--fast` y `--slow` para construir el *grid search* (la grilla de parámetros).
+
+3.  **CRITICAL: Metadata and Logging Integrity (8D Final Set):**
+    * **File:** `tools/optimize_strategy.py` y `tools/analyze_optimization.py`.
+    * **Action:** Asegurarse de que el **JSON de salida** y los **logs de consola** (tablas de resultados) muestren **exclusivamente** los 8 parámetros relevantes para la estrategia BB:
+        1. $\text{BB}_{\text{Window}}$
+        2. $\text{BB}_{\text{Std Dev}}$
+        3. $\text{ATR}_{\text{Window}}$
+        4. $\text{ATR}_{\text{Multiplier}}$
+        5. $\text{ADX}_{\text{Window}}$
+        6. $\text{ADX}_{\text{Threshold}}$
+        7. $\text{MACD}_{\text{Fast}}$
+        8. $\text{Max Hold Hours}$
+        * **Nota:** Los parámetros de EMA/SMA (`fast_window`, `slow_window`) deben ser ignorados y no incluidos en el reporte final para el análisis de robustez.
+
+4.  **New 8D Optimization Ranges (Default):**
+    * **Action:** Definir los siguientes rangos como *default* para la próxima ejecución de la WFO:
+        * `--bb-window`: [14, 20, 30]
+        * `--bb-std-dev`: [1.5, 2.0, 2.5]
+        * `--adx-threshold`: [20, 25] (Ajuste a 20/25 para BB ya que Mean Reversion opera en rangos más suaves).
+        * `--macd-fast`: [12, 16]
+        * `--max-hold-hours`: [72, 96]
+        * `--atr-window`: [10, 14, 20]
+        * `--atr-multiplier`: [1.5, 2.0, 2.5]
+        * `--adx-window`: [10, 14]
+
+**Validation:** El WFO debe ejecutarse sin errores, y el archivo JSON resultante debe tener una estructura de parámetros de 8 dimensiones que coincida con la configuración de Bollinger Bands.
+
+---
+
+### Step 33: Architectural Simplification: Disabling ADX Regime Filter
+
+**Objective:** Address the critically low trade frequency (Return OOS 1.67%) and $0.00\%$ Drawdown anomaly by performing architectural simplification. The ADX (Regime) Filter is hypothesized to be the redundant choke point that is vetoing high-quality Mean Reversion trades.
+
+**Goal:** Modify the strategy factory and configuration to effectively disable the ADX Regime Filter, allowing the system to rely only on the MACD (Momentum) Filter and the Bollinger Band (BB) Trigger. This should increase trade count significantly while aiming to maintain OOS Sharpe > 0.50.
+
+**Mandatory Implementation:**
+
+1.  **Configuration Update:**
+    * **File:** `app/config/models.py`.
+    * **Action:** Update the `BotConfig` model to allow the `regime_filter` field to be set to **`None`** (or completely omitted) in `settings/config.json`.
+
+2.  **Strategy Factory Modification (Disable ADX Injection):**
+    * **File:** `app/core/strategy_factory.py`.
+    * **Action:** Modify the strategy instantiation logic (e.g., in `get_strategy_instance`) to check if the `regime_filter` is present in the configuration. If it is **missing** or set to a disabling value, the `regime_filter` argument passed to the strategy constructor must be **`None`**.
+
+3.  **Strategy Logic Adjustment (Lookback & Signal):**
+    * **File:** `app/strategies/bollinger_band.py` (and potentially `atr_strategy.py` if necessary for generalizability).
+    * **Action:** Review the `max_lookback_period` property to ensure it gracefully handles `self.regime_filter` being `None` during lookback aggregation.
+    * **Action:** Review the `generate_signals` method to ensure the boolean chain (`Trigger ∧ Context ∧ Quality`) handles `Context` being disabled (i.e., defaults the `Regime Check` to `True` if `self.regime_filter` is `None`).
+
+4.  **New WFO Configuration (7D Sweep):**
+    * **File:** `tools/optimize_strategy.py`.
+    * **Action:** **Remove the `--adx-window` and `--adx-threshold` CLI arguments from the optimization process.** The next sweep will be 7D, focusing on the remaining parameters. The strategy factory must be updated to NOT inject the ADX filter during optimization.
+
+**Validation:** The next WFO run will execute a 7D sweep. The expected result is a significant increase in trade count (Return > 1.67%) while maintaining a positive OOS Sharpe Ratio ($\ge 0.50$).
+
+---
+
+
 ### Architecture Backlog (Pending)
 
 * **Refactor: Abstracted Exchange Connector**

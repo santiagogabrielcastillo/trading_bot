@@ -20,6 +20,14 @@ class StrategyConfig(BaseModel):
     symbol: str = "BTC/USDT"
     timeframe: str = "1h"
     params: dict = Field(default_factory=dict)
+    max_hold_hours: Optional[int] = Field(
+        default=None,
+        description="Maximum hours to hold a position before forced exit. If None, no time-based exit is enforced."
+    )
+    long_only: bool = Field(
+        default=False,
+        description="If True, disables all SELL signals, allowing strategy to operate only in long direction. Used for diagnostic purposes to isolate LONG signal performance."
+    )
 
 
 class VolatilityAdjustedStrategyConfig(BaseModel):

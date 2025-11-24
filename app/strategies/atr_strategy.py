@@ -225,6 +225,13 @@ class VolatilityAdjustedStrategy(BaseStrategy):
             np.where(sell_condition, -1, 0)  # SELL or NEUTRAL
         )
         
+        # --- Step 7: Apply Long-Only Symmetry Blockade (if enabled) ---
+        
+        # If long_only is True, convert all SELL signals to NEUTRAL
+        # This isolates LONG signal performance from failed SHORT trades
+        if self.config.long_only:
+            df['signal'] = np.where(df['signal'] == -1, 0, df['signal'])
+        
         # Clean up: Fill NaN values (from rolling/shift) with 0
         df['signal'] = df['signal'].fillna(0).astype(int)
         

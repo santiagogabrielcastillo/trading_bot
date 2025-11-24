@@ -24,3 +24,11 @@ class Signal(int, Enum):
     BUY = 1
     SELL = -1
     HOLD = 0
+
+
+class ExitReason(str, Enum):
+    """Exit reason enum for tracking why positions were closed."""
+    STOP_LOSS = "STOP_LOSS"
+    TAKE_PROFIT = "TAKE_PROFIT"
+    MAX_HOLD_PERIOD = "MAX_HOLD_PERIOD"
+    STRATEGY_SIGNAL = "STRATEGY_SIGNAL"
