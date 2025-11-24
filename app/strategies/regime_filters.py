@@ -13,7 +13,6 @@ The primary implementation uses ADX (Average Directional Index) and DMI
 """
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 from app.core.interfaces import IMarketRegimeFilter
 from app.core.enums import MarketState
@@ -49,6 +48,24 @@ class ADXVolatilityFilter(IMarketRegimeFilter):
         self.adx_window = config.adx_window
         self.adx_threshold = config.adx_threshold
     
+    @property
+    def max_lookback_period(self) -> int:
+        """
+        Return the maximum lookback period required by all filter indicators.
+        
+        For ADX/DMI calculation:
+        - First smoothed values (ATR, +DM, -DM) need adx_window periods
+        - ADX calculation starts at 2 * adx_window - 2 (needs two smoothed periods)
+        - Full ADX/DMI values available after 2 * adx_window periods
+        
+        Returns:
+            Number of periods needed for indicator warm-up (2 * adx_window)
+        """
+        # ADX requires: adx_window for smoothed TR/DM, then another adx_window for smoothed DX
+        # First valid ADX value appears at index: 2 * adx_window - 2
+        # To be safe, we use 2 * adx_window as the lookback
+        return 2 * self.adx_window
+    
     def get_regime(self, data: pd.DataFrame) -> pd.Series:
         """
         Classify market regime for each row using ADX and DMI indicators.
@@ -72,14 +89,14 @@ class ADXVolatilityFilter(IMarketRegimeFilter):
         di_plus = df['+DI']
         di_minus = df['-DI']
         
-        # Initialize regime series with RANGING (default)
+        # Initialize regime series with default RANGING state
         regime = pd.Series(
             MarketState.RANGING,
             index=data.index,
-            name='market_regime'
+            name='market_regime',
+            dtype="object"
         )
         
-        # Classify trending markets
         # TRENDING_UP: Strong trend (ADX > threshold) AND upward direction (+DI > -DI)
         trending_up = (adx > self.adx_threshold) & (di_plus > di_minus)
         
@@ -87,20 +104,10 @@ class ADXVolatilityFilter(IMarketRegimeFilter):
         trending_down = (adx > self.adx_threshold) & (di_minus > di_plus)
         
         # Assign regime values (vectorized)
-        regime = np.where(
-            trending_up,
-            MarketState.TRENDING_UP,
-            np.where(
-                trending_down,
-                MarketState.TRENDING_DOWN,
-                MarketState.RANGING
-            )
-        )
+        regime.loc[trending_up] = MarketState.TRENDING_UP
+        regime.loc[trending_down] = MarketState.TRENDING_DOWN
         
-        # Convert to Series with proper dtype
-        regime_series = pd.Series(regime, index=data.index, name='market_regime')
-        
-        return regime_series
+        return regime
     
     def _calculate_adx_dmi(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -161,58 +168,29 @@ class ADXVolatilityFilter(IMarketRegimeFilter):
             0.0
         )
         
-        # Step 3: Smooth TR and DM using Wilder's smoothing
-        # Wilder's smoothing: Smoothed = Previous_Smoothed - (Previous_Smoothed / period) + Current_Value
-        # For first value, use simple average
+        # Step 3: Smooth TR and DM using Wilder's smoothing (vectorized via EWM)
+        def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
+            return series.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
         
-        # Initialize smoothed series
-        atr = pd.Series(index=data.index, dtype=float)
-        smoothed_plus_dm = pd.Series(index=data.index, dtype=float)
-        smoothed_minus_dm = pd.Series(index=data.index, dtype=float)
-        
-        # First value: simple average
-        atr.iloc[self.adx_window - 1] = tr.iloc[:self.adx_window].mean()
-        smoothed_plus_dm.iloc[self.adx_window - 1] = plus_dm[:self.adx_window].mean()
-        smoothed_minus_dm.iloc[self.adx_window - 1] = minus_dm[:self.adx_window].mean()
-        
-        # Subsequent values: Wilder's smoothing
-        for i in range(self.adx_window, len(data)):
-            atr.iloc[i] = atr.iloc[i - 1] - (atr.iloc[i - 1] / self.adx_window) + tr.iloc[i]
-            smoothed_plus_dm.iloc[i] = smoothed_plus_dm.iloc[i - 1] - (smoothed_plus_dm.iloc[i - 1] / self.adx_window) + plus_dm[i]
-            smoothed_minus_dm.iloc[i] = smoothed_minus_dm.iloc[i - 1] - (smoothed_minus_dm.iloc[i - 1] / self.adx_window) + minus_dm[i]
+        atr = _wilder_smooth(tr, self.adx_window)
+        smoothed_plus_dm = _wilder_smooth(pd.Series(plus_dm, index=data.index), self.adx_window)
+        smoothed_minus_dm = _wilder_smooth(pd.Series(minus_dm, index=data.index), self.adx_window)
         
         # Step 4: Calculate Directional Indicators (+DI and -DI)
-        # +DI = 100 * (Smoothed +DM / ATR)
-        # -DI = 100 * (Smoothed -DM / ATR)
-        # Avoid division by zero
-        di_plus = 100 * (smoothed_plus_dm / atr).replace([np.inf, -np.inf], 0).fillna(0)
-        di_minus = 100 * (smoothed_minus_dm / atr).replace([np.inf, -np.inf], 0).fillna(0)
+        atr_safe = atr.replace(0, np.nan)
+        di_plus = 100 * (smoothed_plus_dm / atr_safe)
+        di_minus = 100 * (smoothed_minus_dm / atr_safe)
         
-        # Step 5: Calculate ADX (Average Directional Index)
-        # ADX = 100 * (|+DI - -DI| / (+DI + -DI))
-        # Smooth ADX using Wilder's smoothing
-        
-        # Calculate DX (Directional Index) for each period
-        di_sum = di_plus + di_minus
+        # Step 5: Calculate DX and ADX (0-100 range)
+        di_sum = (di_plus + di_minus).replace(0, np.nan)
         di_diff = (di_plus - di_minus).abs()
+        dx = 100 * (di_diff / di_sum)
+        adx = _wilder_smooth(dx, self.adx_window)
         
-        # Avoid division by zero
-        dx = 100 * (di_diff / di_sum).replace([np.inf, -np.inf], 0).fillna(0)
-        
-        # Smooth DX to get ADX using Wilder's smoothing
-        adx = pd.Series(index=data.index, dtype=float)
-        
-        # First ADX value: simple average of first period DX values
-        adx.iloc[2 * self.adx_window - 2] = dx.iloc[self.adx_window:2 * self.adx_window].mean()
-        
-        # Subsequent values: Wilder's smoothing
-        for i in range(2 * self.adx_window - 1, len(data)):
-            adx.iloc[i] = adx.iloc[i - 1] - (adx.iloc[i - 1] / self.adx_window) + dx.iloc[i]
-        
-        # Fill NaN values (from warm-up period) with 0
-        adx = adx.fillna(0)
-        di_plus = di_plus.fillna(0)
-        di_minus = di_minus.fillna(0)
+        # Normalize indicator ranges and replace NaNs from warm-up
+        di_plus = di_plus.clip(lower=0, upper=100).fillna(0)
+        di_minus = di_minus.clip(lower=0, upper=100).fillna(0)
+        adx = adx.clip(lower=0, upper=100).fillna(0)
         
         # Add columns to DataFrame
         data['+DI'] = di_plus
